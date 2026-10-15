@@ -2,13 +2,13 @@
 
 Verified on 2026-09-11 with Paseo **0.8.0**, `@getpaseo/plugin` **0.8.0**, and Google's unmodified official ACP server **agy_acp_server_1.1.1** on **macOS ARM64**. The server and its companion executable were downloaded from the official ACP Registry's Google distribution URL. Tests used a separate demonstration workspace.
 
-## v0.1.3 support range
+## Support range
 
-Paseo 0.11 and later include native Antigravity (AGY) support. Plugin v0.1.3 limits `requirements.paseo` to `>=0.8.0 <0.11.0`; use Paseo's native support on 0.11 and later.
+The plugin manifest requires `paseo: ">=0.8.0 <0.12.0"`.
 
-The automated manifest test uses Paseo's actual compatibility checker for both app and daemon. It accepts 0.8.0, 0.8.1, 0.9.0-beta.1, 0.9.0, 0.10.0, and 0.10.1, and rejects 0.7.2, 0.11.0-beta.1, 0.11.0, 0.11.1, 0.12.0, and 1.0.0. Paseo checks the stable core of prerelease versions, so the upper bound also excludes 0.11 prereleases. Manifest acceptance does not establish live-session or SDK compatibility with 0.10.
+The automated manifest test uses Paseo's actual compatibility checker for both app and daemon. It accepts 0.8.0, 0.8.1, 0.9.0-beta.1, 0.9.0, 0.10.0, 0.10.1, 0.11.0, and 0.11.1, and rejects 0.7.2, 0.12.0-beta.1, 0.12.0, 0.12.1, and 1.0.0. Paseo checks the stable core of prerelease versions, so the upper bound also excludes 0.12 prereleases.
 
-On 2026-10-02, type checking and all three Node tests passed on macOS with SDK 0.8.0 and with SDK 0.9.0 in an isolated temporary copy.
+On 2026-10-02, type checking and all Node tests passed on macOS with SDK 0.8.0 and with SDK 0.9.0 in an isolated temporary copy.
 
 ## Paseo 0.9 compatibility review
 
