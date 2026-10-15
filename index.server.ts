@@ -8,7 +8,7 @@ export default function contribute(
 ) {
   const provider = createProvider({
     id: "agy",
-    label: "Antigravity",
+    label: "Antigravity (ACP)",
     description: "Google's Antigravity coding agent through its official ACP server",
     icon: "icon.svg",
     command: agyCommand(),

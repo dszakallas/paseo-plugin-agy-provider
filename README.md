@@ -68,7 +68,7 @@ Use the corresponding path under `GEMINI_HOME` if overridden, and restart the da
 
 ## Usage
 
-Choose **Antigravity** in the model picker, or run:
+Choose **Antigravity (ACP)** in the model picker, or run:
 
 ```sh
 paseo run --provider agy "Explain this project's entry point."

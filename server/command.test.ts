@@ -79,21 +79,28 @@ test("sanitizes failed tool call timeline events with null error", async () => {
 
   const mockProvider = {
     id: "agy",
-    label: "Antigravity",
+    label: "Antigravity (ACP)",
     connect: async () => mockConnection,
   };
 
+  let providerOptions: any;
   contributeServer(
     {
       registerProvider(provider: any) {
         registeredProvider = provider;
       },
     } as unknown as PluginServerContext,
-    (() => mockProvider) as any,
+    ((options: any) => {
+      providerOptions = options;
+      return mockProvider;
+    }) as any,
   );
 
   assert.ok(registeredProvider, "Provider should be registered");
   assert.equal(registeredProvider.id, "agy");
+  assert.equal(registeredProvider.label, "Antigravity (ACP)");
+  assert.equal(providerOptions?.id, "agy");
+  assert.equal(providerOptions?.label, "Antigravity (ACP)");
 
   const connection = await registeredProvider.connect({ versions: [1], capabilities: [] });
   const received: any[] = [];
