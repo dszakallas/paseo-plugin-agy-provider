@@ -87,6 +87,28 @@ Update the official server separately. Removing the plugin leaves Google's serve
 - **Paseo 0.8:** release-pinned installations do not track updates; remove and re-add with a newer `--ref` to change the pin.
 - **Paseo 0.9:** `plugin update` previews the proposed revision and asks for confirmation. Add `--check` to preview only or `--yes` to approve without a prompt. Git updates target the default branch HEAD regardless of the initial `--ref`; that selector is not a persistent pin. To select a specific tag or commit, run `paseo plugin update agy-provider --ref <tag-or-commit>` (applies without another confirmation). See the [update reference](https://paseo.sh/docs/plugins/reference#cli-reference).
 
+## MCP servers
+
+MCP servers are loaded the way the `agy` CLI loads them and added to the servers Paseo already passes to the session. Later sources override earlier ones with the same name:
+
+1. `~/.gemini/config/mcp_config.json` (or `$GEMINI_HOME/config/mcp_config.json`)
+2. Servers supplied by Paseo
+3. `.agents/mcp_config.json` (also `.agent`, `_agents`, `_agent`) in each directory from the repository root down to the session's working directory, nearest last. Without a `.git` directory only the working directory is checked.
+
+```json
+{
+  "mcpServers": {
+    "sqlite": { "command": "node", "args": ["server.js"], "env": { "DB": "/data/app.db" } },
+    "remote": { "serverUrl": "https://api.example.com/mcp", "headers": { "Authorization": "Bearer TOKEN" } },
+    "broken": { "command": "flaky", "disabled": true }
+  }
+}
+```
+
+`"disabled": true` removes a server defined at a lower level. Invalid entries and unreadable files are skipped with a warning in `paseo plugin logs agy-provider`. The official server opens the connections; a server that fails to start is the server's concern and does not stop the plugin. Set `"disabled": true` on a server that breaks session startup.
+
+`cwd`, `authProviderType` and `disabledTools` cannot be passed through Paseo and are ignored with a warning. For OAuth servers, authenticate once with the `agy` CLI or Antigravity IDE so the token is stored in `~/.gemini/antigravity/mcp_oauth_tokens.json`, or set an `Authorization` header. The plugin logs a warning when a server with an `oauth` block has no stored token.
+
 ## Limitations
 
 - Real-agent verification covers macOS ARM64 and personal Google OAuth. Linux/Windows sessions, API-key and enterprise authentication, and physical mobile devices are unverified.
