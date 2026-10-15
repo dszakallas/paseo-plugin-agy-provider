@@ -8,6 +8,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   findWorkspaceMcpConfigPaths,
   getGlobalMcpConfigPath,
+  isDevenvAvailable,
+  isMcpInitializationErrorMessage,
   loadMcpConfigFile,
   parseMcpServer,
   resolveMcpServers,
@@ -202,4 +204,100 @@ test("provider connection injects MCP servers into session.open only", async (t)
     local: { type: "stdio", command: "tool" },
   });
   assert.deepEqual(sent[1], { type: "session.interrupt", sessionId: "s" });
+});
+
+test("isMcpInitializationErrorMessage identifies ACP MCP initialization failure text", () => {
+  const userReported =
+    "The MCP server 'devenv' failed to initialize:  \x1b[31m× \x1b[0m File devenv.nix does not exist. " +
+    "To get started, run:  \x1b[31m  \x1b[0m  \x1b[31m  \x1b[0m $ devenv init: connection closed: calling " +
+    '"initialize": client is closing: EOF. Fix the MCP server, or remove it from your configuration and start ' +
+    "a new session, to continue.";
+  assert.equal(isMcpInitializationErrorMessage(userReported), true);
+  assert.equal(
+    isMcpInitializationErrorMessage(
+      "The MCP server 'custom' failed to initialize. Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+    ),
+    true,
+  );
+  assert.equal(isMcpInitializationErrorMessage("The MCP server 'x' failed to initialize: timeout"), true);
+  assert.equal(
+    isMcpInitializationErrorMessage(
+      "Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+    ),
+    true,
+  );
+
+  assert.equal(isMcpInitializationErrorMessage("Here is your answer to the prompt."), false);
+  assert.equal(isMcpInitializationErrorMessage(""), false);
+  assert.equal(isMcpInitializationErrorMessage(null), false);
+  assert.equal(isMcpInitializationErrorMessage(undefined), false);
+  assert.equal(isMcpInitializationErrorMessage(123), false);
+});
+
+test("isDevenvAvailable verifies presence of devenv.nix in workspace or DEVENV_ROOT", (t) => {
+  const root = tmp(t);
+  const cwd = path.join(root, "sub");
+  fs.mkdirSync(cwd);
+
+  // Non-devenv stdio server is always available
+  assert.equal(isDevenvAvailable({ type: "stdio", command: "node" }, cwd), true);
+  // Remote server is always available
+  assert.equal(isDevenvAvailable({ type: "http", url: "http://localhost:3000" }, cwd), true);
+
+  // Devenv without devenv.nix is unavailable
+  assert.equal(isDevenvAvailable({ type: "stdio", command: "devenv" }, cwd), false);
+  assert.equal(isDevenvAvailable({ type: "stdio", command: "/nix/store/pkg/bin/devenv" }, cwd), false);
+
+  // Devenv with devenv.nix in cwd or ancestor
+  write(path.join(root, "devenv.nix"), "");
+  assert.equal(isDevenvAvailable({ type: "stdio", command: "devenv" }, cwd), true);
+
+  // Devenv with DEVENV_ROOT env
+  const otherDir = tmp(t);
+  assert.equal(
+    isDevenvAvailable({ type: "stdio", command: "devenv", env: { DEVENV_ROOT: otherDir } }, cwd),
+    false,
+  );
+  write(path.join(otherDir, "devenv.local.nix"), "");
+  assert.equal(
+    isDevenvAvailable({ type: "stdio", command: "devenv", env: { DEVENV_ROOT: otherDir } }, cwd),
+    true,
+  );
+});
+
+test("resolveMcpServers filters devenv when devenv.nix is missing and preserves it when present", (t) => {
+  const home = tmp(t);
+  const repoWithoutDevenv = tmp(t);
+  fs.mkdirSync(path.join(repoWithoutDevenv, ".git"));
+  const { messages, warn } = collector();
+
+  write(path.join(repoWithoutDevenv, ".agents", "mcp_config.json"), {
+    mcpServers: {
+      devenv: { command: "devenv", args: ["mcp"] },
+      tool: { command: "tool" },
+    },
+  });
+
+  const filtered = resolveMcpServers(repoWithoutDevenv, {}, { geminiDir: home, warn });
+  assert.deepEqual(filtered, {
+    tool: { type: "stdio", command: "tool" },
+  });
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /MCP server 'devenv' skipped: 'devenv.nix' does not exist/);
+
+  // When devenv.nix exists, devenv is included
+  const repoWithDevenv = tmp(t);
+  fs.mkdirSync(path.join(repoWithDevenv, ".git"));
+  write(path.join(repoWithDevenv, "devenv.nix"), "");
+  write(path.join(repoWithDevenv, ".agents", "mcp_config.json"), {
+    mcpServers: {
+      devenv: { command: "devenv", args: ["mcp"] },
+    },
+  });
+  messages.length = 0;
+  const preserved = resolveMcpServers(repoWithDevenv, {}, { geminiDir: home, warn });
+  assert.deepEqual(preserved, {
+    devenv: { type: "stdio", command: "devenv", args: ["mcp"] },
+  });
+  assert.equal(messages.length, 0);
 });

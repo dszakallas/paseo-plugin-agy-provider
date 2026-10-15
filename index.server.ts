@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import { agyCommand } from "./server/command.ts";
-import { resolveMcpServers } from "./server/mcp.ts";
+import { isMcpInitializationErrorMessage, resolveMcpServers } from "./server/mcp.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = { type: string; config?: { cwd?: string; mcpServers?: Record<string, unknown> } };
@@ -41,20 +41,36 @@ export default function contribute(
           return connection.send(withMcpServers(input));
         },
         onEvent(listener) {
+          const suppressedMessageIds = new Set<string>();
           return connection.onEvent((event: any) => {
-            if (
-              event.type === "timeline.item" &&
-              event.item?.type === "tool_call" &&
-              event.item?.status === "failed" &&
-              event.item?.error == null
-            ) {
-              event = {
-                ...event,
-                item: {
-                  ...event.item,
-                  error: event.item.detail?.output ?? "Tool call failed",
-                },
-              };
+            if (event.type === "timeline.item") {
+              if (
+                event.item?.type === "tool_call" &&
+                event.item?.status === "failed" &&
+                event.item?.error == null
+              ) {
+                event = {
+                  ...event,
+                  item: {
+                    ...event.item,
+                    error: event.item.detail?.output ?? "Tool call failed",
+                  },
+                };
+              } else if (
+                event.item?.type === "assistant_message" ||
+                event.item?.type === "reasoning"
+              ) {
+                if (
+                  suppressedMessageIds.has(event.item.id) ||
+                  isMcpInitializationErrorMessage(event.item.text)
+                ) {
+                  suppressedMessageIds.add(event.item.id);
+                  console.warn(
+                    `[agy-provider] Suppressed MCP initialization error from timeline: ${event.item.text}`,
+                  );
+                  return;
+                }
+              }
             }
             listener(event);
           });

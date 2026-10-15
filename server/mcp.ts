@@ -139,12 +139,77 @@ export function getGeminiDir(options: McpResolveOptions = {}): string {
   return options.geminiDir ?? process.env.GEMINI_HOME ?? path.join(os.homedir(), ".gemini");
 }
 
+export function getGlobalMcpConfigPaths(options: McpResolveOptions = {}): string[] {
+  const geminiDir = getGeminiDir(options);
+  const candidates = [
+    path.join(geminiDir, "config", "mcp_config.json"),
+    path.join(geminiDir, "antigravity-cli", "mcp_config.json"),
+    path.join(geminiDir, "antigravity", "mcp_config.json"),
+  ];
+  const existing: string[] = [];
+  for (const c of candidates) {
+    if (fs.existsSync(c) && !existing.includes(c)) existing.push(c);
+  }
+  return existing;
+}
+
 export function getGlobalMcpConfigPath(options: McpResolveOptions = {}): string {
-  return path.join(getGeminiDir(options), "config", "mcp_config.json");
+  const paths = getGlobalMcpConfigPaths(options);
+  return paths[0] ?? path.join(getGeminiDir(options), "config", "mcp_config.json");
 }
 
 export function getOAuthTokensPath(options: McpResolveOptions = {}): string {
-  return path.join(getGeminiDir(options), "antigravity", "mcp_oauth_tokens.json");
+  const geminiDir = getGeminiDir(options);
+  const cliPath = path.join(geminiDir, "antigravity-cli", "mcp_oauth_tokens.json");
+  if (fs.existsSync(cliPath)) return cliPath;
+  return path.join(geminiDir, "antigravity", "mcp_oauth_tokens.json");
+}
+
+/**
+ * Checks whether an MCP server configured as `devenv` can actually run in the current workspace.
+ * Devenv strictly requires `devenv.nix` (or `devenv.local.nix`). Without it, `devenv mcp` exits
+ * immediately with code 1 and causes ACP to abort the entire turn.
+ */
+export function isDevenvAvailable(server: McpServerConfig, cwd: string): boolean {
+  if (server.type !== "stdio") return true;
+  const isDevenv = server.command === "devenv" || path.basename(server.command) === "devenv";
+  if (!isDevenv) return true;
+
+  const devenvRoot = server.env?.DEVENV_ROOT;
+  if (devenvRoot) {
+    return (
+      fs.existsSync(path.join(devenvRoot, "devenv.nix")) ||
+      fs.existsSync(path.join(devenvRoot, "devenv.local.nix"))
+    );
+  }
+
+  let dir = path.resolve(cwd);
+  for (;;) {
+    if (
+      fs.existsSync(path.join(dir, "devenv.nix")) ||
+      fs.existsSync(path.join(dir, "devenv.local.nix"))
+    ) {
+      return true;
+    }
+    if (fs.existsSync(path.join(dir, ".git"))) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
+
+/**
+ * Detects whether a message text corresponds to an ACP MCP server initialization failure.
+ * When an MCP server fails to start (e.g. devenv failing without devenv.nix, broken binary, etc.),
+ * Google's ACP server emits an agent message chunk with a formatted error instead of failing gracefully.
+ */
+export function isMcpInitializationErrorMessage(text: unknown): boolean {
+  if (typeof text !== "string") return false;
+  return (
+    /The MCP server '[^']+' failed to initialize/i.test(text) ||
+    text.includes("Fix the MCP server, or remove it from your configuration and start a new session")
+  );
 }
 
 /**
@@ -216,8 +281,12 @@ export function resolveMcpServers(
   const warn = options.warn ?? defaultWarn;
   const merged: Record<string, McpEntry> = {};
 
-  for (const [name, entry] of Object.entries(loadEntries(getGlobalMcpConfigPath(options), warn))) {
-    merged[name] = entry;
+  const globalPaths = getGlobalMcpConfigPaths(options);
+  const globalFiles = globalPaths.length > 0 ? globalPaths : [getGlobalMcpConfigPath(options)];
+  for (const file of globalFiles) {
+    for (const [name, entry] of Object.entries(loadEntries(file, warn))) {
+      merged[name] = entry;
+    }
   }
   for (const [name, server] of Object.entries(existing)) {
     merged[name] = { server: server as McpServerConfig, oauth: false };
@@ -232,7 +301,12 @@ export function resolveMcpServers(
 
   const result: Record<string, McpServerConfig> = {};
   for (const [name, entry] of Object.entries(merged)) {
-    if (entry.server) result[name] = entry.server;
+    if (!entry.server) continue;
+    if (!isDevenvAvailable(entry.server, cwd)) {
+      warn(`MCP server '${name}' skipped: 'devenv.nix' does not exist in workspace.`);
+      continue;
+    }
+    result[name] = entry.server;
   }
   return result;
 }
