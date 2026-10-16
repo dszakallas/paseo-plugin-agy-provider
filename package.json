@@ -10,7 +10,7 @@
   "bugs": "https://github.com/3ae3ae/paseo-plugin-agy-provider/issues",
   "scripts": {
     "login": "node scripts/login.ts",
-    "test": "node --test server/command.test.ts server/mcp.test.ts server/tools.test.ts",
+    "test": "node --test server/command.test.ts server/mcp.test.ts server/quota.test.ts server/tools.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

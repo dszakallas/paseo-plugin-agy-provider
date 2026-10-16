@@ -7,6 +7,10 @@ import {
   resolveMcpServers,
   stripAnsi,
 } from "./server/mcp.ts";
+import {
+  formatQuotaExceededMessage,
+  isQuotaExceededErrorMessage,
+} from "./server/quota.ts";
 import { enrichToolCall } from "./server/tools.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
@@ -57,8 +61,43 @@ export default function contribute(
           return connection.send(await withMcpServers(input));
         },
         onEvent(listener) {
+          const pendingQuotaErrors = new Map<string, string>();
           return connection.onEvent((event: any) => {
-            if (event.type === "timeline.item") {
+            if (event.type === "session.turn") {
+              if (event.state === "started") {
+                pendingQuotaErrors.delete(event.sessionId);
+              } else if (event.state === "completed" || event.state === "canceled") {
+                const pendingQuota = pendingQuotaErrors.get(event.sessionId);
+                if (pendingQuota) {
+                  pendingQuotaErrors.delete(event.sessionId);
+                  listener({
+                    ...event,
+                    state: "failed",
+                    error: {
+                      message: pendingQuota,
+                      code: "quota_exhausted",
+                    },
+                  });
+                  return;
+                }
+              } else if (event.state === "failed") {
+                const pendingQuota = pendingQuotaErrors.get(event.sessionId);
+                pendingQuotaErrors.delete(event.sessionId);
+                if (pendingQuota) {
+                  listener({
+                    ...event,
+                    error: {
+                      message: pendingQuota,
+                      code: "quota_exhausted",
+                      diagnostic: event.error?.diagnostic,
+                    },
+                  });
+                  return;
+                }
+              }
+            } else if (event.type === "session.closed") {
+              pendingQuotaErrors.delete(event.sessionId);
+            } else if (event.type === "timeline.item") {
               if (event.item?.type === "tool_call") {
                 event = {
                   ...event,
@@ -68,6 +107,12 @@ export default function contribute(
                 event.item?.type === "assistant_message" ||
                 event.item?.type === "reasoning"
               ) {
+                if (isQuotaExceededErrorMessage(event.item?.text)) {
+                  const cleanMessage = formatQuotaExceededMessage(event.item.text);
+                  console.warn(`[agy-provider] Quota exceeded: ${cleanMessage}`);
+                  pendingQuotaErrors.set(event.sessionId, cleanMessage);
+                  return;
+                }
                 if (isMcpInitializationErrorMessage(event.item?.text)) {
                   const cleanMessage = stripAnsi(event.item.text);
                   console.warn(
