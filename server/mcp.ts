@@ -165,126 +165,20 @@ export function getOAuthTokensPath(options: McpResolveOptions = {}): string {
   return path.join(geminiDir, "antigravity", "mcp_oauth_tokens.json");
 }
 
-export function isDevenv(command: string): boolean {
-  return command === "devenv" || path.basename(command) === "devenv";
-}
-
 /**
- * Finds the directory containing `devenv.nix` or `devenv.local.nix` for a given devenv MCP server.
- * Checks `server.env.DEVENV_ROOT`, then walks up from `cwd` stopping at `.git` or the filesystem root.
+ * Strips ANSI color / style escape sequences and normalizes horizontal whitespace for clean display.
  */
-export function findDevenvRoot(
-  server: { type: string; command?: string; env?: Record<string, string> },
-  cwd: string,
-): string | null {
-  if (server.type !== "stdio" || !server.command || !isDevenv(server.command)) {
-    return null;
-  }
-
-  const devenvRoot = server.env?.DEVENV_ROOT;
-  if (devenvRoot) {
-    if (
-      fs.existsSync(path.join(devenvRoot, "devenv.nix")) ||
-      fs.existsSync(path.join(devenvRoot, "devenv.local.nix"))
-    ) {
-      return devenvRoot;
-    }
-    return null;
-  }
-
-  let dir = path.resolve(cwd);
-  for (;;) {
-    if (
-      fs.existsSync(path.join(dir, "devenv.nix")) ||
-      fs.existsSync(path.join(dir, "devenv.local.nix"))
-    ) {
-      return dir;
-    }
-    if (fs.existsSync(path.join(dir, ".git"))) break;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  return null;
-}
-
-/**
- * Wraps a stdio command so that it executes in the specified working directory.
- * Because ACP spawns stdio child processes without setting cwd (inheriting the daemon's
- * working directory), wrapping with `sh -c 'dir="$1"; shift; cd "$dir" && exec "$@"'`
- * ensures that the command runs in `targetDir` transparently.
- */
-export function wrapWithCwd(
-  server: McpStdioServer,
-  targetDir: string,
-): McpStdioServer {
-  const isAlreadyWrapped =
-    server.command === "sh" &&
-    Array.isArray(server.args) &&
-    server.args.length >= 2 &&
-    server.args[0] === "-c" &&
-    server.args[1].includes('cd "$dir" && exec "$@"');
-
-  if (isAlreadyWrapped) return server;
-
-  return {
-    ...server,
-    command: "sh",
-    args: [
-      "-c",
-      'dir="$1"; shift; cd "$dir" && exec "$@"',
-      "--",
-      targetDir,
-      server.command,
-      ...(server.args ?? []),
-    ],
-  };
-}
-
-/**
- * Adapts a devenv stdio server configuration so that it can run successfully
- * when spawned by ACP (which does not set process cwd to the workspace root).
- *
- * Injects `DEVENV_ROOT: root`, ensures `--from path:<root>` is present in arguments,
- * and wraps the process to change directory to `root` before executing `devenv`.
- */
-export function adaptDevenvServer(server: McpStdioServer, root: string): McpStdioServer {
-  const env = { ...server.env, DEVENV_ROOT: root };
-  let args = server.args ? [...server.args] : [];
-
-  const hasFrom = args.some((arg) => arg === "--from" || arg.startsWith("--from="));
-  if (!hasFrom) {
-    const mcpIdx = args.indexOf("mcp");
-    if (mcpIdx !== -1) {
-      args.splice(mcpIdx + 1, 0, "--from", `path:${root}`);
-    } else {
-      args.push("--from", `path:${root}`);
-    }
-  }
-
-  const adapted: McpStdioServer = {
-    ...server,
-    args,
-    env,
-  };
-
-  return wrapWithCwd(adapted, root);
-}
-
-/**
- * Checks whether an MCP server configured as `devenv` can actually run in the current workspace.
- * Devenv strictly requires `devenv.nix` (or `devenv.local.nix`). Without it, `devenv mcp` exits
- * immediately with code 1 and causes ACP to abort the entire turn.
- */
-export function isDevenvAvailable(server: McpServerConfig, cwd: string): boolean {
-  if (server.type !== "stdio" || !isDevenv(server.command)) return true;
-  return findDevenvRoot(server, cwd) !== null;
+export function stripAnsi(text: string): string {
+  if (typeof text !== "string") return "";
+  return text
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "")
+    .replace(/[^\S\n]+/g, " ")
+    .trim();
 }
 
 /**
  * Detects whether a message text corresponds to an ACP MCP server initialization failure.
- * When an MCP server fails to start (e.g. devenv failing without devenv.nix, broken binary, etc.),
+ * When an MCP server fails to start (e.g. command not found, crash on startup, broken binary, etc.),
  * Google's ACP server emits an agent message chunk with a formatted error instead of failing gracefully.
  */
 export function isMcpInitializationErrorMessage(text: unknown): boolean {
@@ -384,17 +278,7 @@ export function resolveMcpServers(
 
   const result: Record<string, McpServerConfig> = {};
   for (const [name, entry] of Object.entries(merged)) {
-    if (!entry.server) continue;
-    if (entry.server.type === "stdio" && isDevenv(entry.server.command)) {
-      const root = findDevenvRoot(entry.server, cwd);
-      if (!root) {
-        warn(`MCP server '${name}' skipped: 'devenv.nix' does not exist in workspace.`);
-        continue;
-      }
-      result[name] = adaptDevenvServer(entry.server, root);
-      continue;
-    }
-    result[name] = entry.server;
+    if (entry.server) result[name] = entry.server;
   }
   return result;
 }

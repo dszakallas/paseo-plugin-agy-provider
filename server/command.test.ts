@@ -192,7 +192,7 @@ test("sanitizes failed tool call timeline events with null error", async () => {
   assert.equal(received[5].type, "session.turn");
 });
 
-test("forwards assistant messages to timeline events without dropping", async () => {
+test("transforms MCP initialization errors to error timeline items and forwards regular messages", async () => {
   let registeredProvider: any;
   let interceptedListener: ((event: any) => void) | undefined;
 
@@ -222,17 +222,41 @@ test("forwards assistant messages to timeline events without dropping", async ()
 
   assert.ok(interceptedListener, "Listener should be attached");
 
+  // Initial chunk of an MCP initialization error with ANSI codes
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
     item: {
       type: "assistant_message",
       id: "chunk-1",
-      text: "The MCP server 'playwright' failed to initialize: command not found",
+      text: "The MCP server 'playwright' failed to initialize: \x1b[31mcommand not found\x1b[0m",
     },
   });
-  assert.equal(received.length, 1, "Assistant message should be delivered to timeline");
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0].item, {
+    type: "error",
+    id: "chunk-1",
+    message: "The MCP server 'playwright' failed to initialize: command not found",
+  });
 
+  // Follow-up chunk for the same item ID is also transformed to an error item
+  interceptedListener({
+    type: "timeline.item",
+    sessionId: "session-1",
+    item: {
+      type: "assistant_message",
+      id: "chunk-1",
+      text: "Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+    },
+  });
+  assert.equal(received.length, 2);
+  assert.deepEqual(received[1].item, {
+    type: "error",
+    id: "chunk-1",
+    message: "Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+  });
+
+  // Regular assistant message is preserved without modification
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
@@ -242,6 +266,10 @@ test("forwards assistant messages to timeline events without dropping", async ()
       text: "Here is the code you requested.",
     },
   });
-  assert.equal(received.length, 2);
-  assert.equal(received[1].item.text, "Here is the code you requested.");
+  assert.equal(received.length, 3);
+  assert.deepEqual(received[2].item, {
+    type: "assistant_message",
+    id: "chunk-2",
+    text: "Here is the code you requested.",
+  });
 });
