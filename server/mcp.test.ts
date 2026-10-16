@@ -6,6 +6,8 @@ import { test } from "node:test";
 import contributeServer from "../index.server.ts";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
+  adaptDevenvServer,
+  findDevenvRoot,
   findWorkspaceMcpConfigPaths,
   getGlobalMcpConfigPath,
   isDevenvAvailable,
@@ -13,6 +15,7 @@ import {
   loadMcpConfigFile,
   parseMcpServer,
   resolveMcpServers,
+  wrapWithCwd,
 } from "./mcp.ts";
 
 function tmp(t: { after(fn: () => void): void }): string {
@@ -285,7 +288,7 @@ test("resolveMcpServers filters devenv when devenv.nix is missing and preserves 
   assert.equal(messages.length, 1);
   assert.match(messages[0], /MCP server 'devenv' skipped: 'devenv.nix' does not exist/);
 
-  // When devenv.nix exists, devenv is included
+  // When devenv.nix exists, devenv is included and adapted for ACP
   const repoWithDevenv = tmp(t);
   fs.mkdirSync(path.join(repoWithDevenv, ".git"));
   write(path.join(repoWithDevenv, "devenv.nix"), "");
@@ -297,7 +300,95 @@ test("resolveMcpServers filters devenv when devenv.nix is missing and preserves 
   messages.length = 0;
   const preserved = resolveMcpServers(repoWithDevenv, {}, { geminiDir: home, warn });
   assert.deepEqual(preserved, {
-    devenv: { type: "stdio", command: "devenv", args: ["mcp"] },
+    devenv: {
+      type: "stdio",
+      command: "sh",
+      args: [
+        "-c",
+        'dir="$1"; shift; cd "$dir" && exec "$@"',
+        "--",
+        repoWithDevenv,
+        "devenv",
+        "mcp",
+        "--from",
+        `path:${repoWithDevenv}`,
+      ],
+      env: {
+        DEVENV_ROOT: repoWithDevenv,
+      },
+    },
   });
   assert.equal(messages.length, 0);
+});
+
+test("wrapWithCwd wraps command with sh -c and avoids double-wrapping", () => {
+  const unwrapped = {
+    type: "stdio" as const,
+    command: "tool",
+    args: ["--flag", "val"],
+  };
+  const wrapped = wrapWithCwd(unwrapped, "/workspace");
+  assert.deepEqual(wrapped, {
+    type: "stdio",
+    command: "sh",
+    args: [
+      "-c",
+      'dir="$1"; shift; cd "$dir" && exec "$@"',
+      "--",
+      "/workspace",
+      "tool",
+      "--flag",
+      "val",
+    ],
+  });
+
+  // Re-wrapping does not nest wrappers
+  const rewrapped = wrapWithCwd(wrapped, "/other");
+  assert.deepEqual(rewrapped, wrapped);
+});
+
+test("adaptDevenvServer injects DEVENV_ROOT, --from path, and working dir wrapper", () => {
+  const base = {
+    type: "stdio" as const,
+    command: "/bin/devenv",
+    args: ["mcp"],
+  };
+  const adapted = adaptDevenvServer(base, "/project");
+  assert.deepEqual(adapted, {
+    type: "stdio",
+    command: "sh",
+    args: [
+      "-c",
+      'dir="$1"; shift; cd "$dir" && exec "$@"',
+      "--",
+      "/project",
+      "/bin/devenv",
+      "mcp",
+      "--from",
+      "path:/project",
+    ],
+    env: {
+      DEVENV_ROOT: "/project",
+    },
+  });
+
+  // Preserves existing --from argument
+  const withFrom = {
+    type: "stdio" as const,
+    command: "devenv",
+    args: ["mcp", "--from", "path:/custom"],
+    env: { FOO: "bar" },
+  };
+  const adaptedWithFrom = adaptDevenvServer(withFrom, "/project");
+  assert.deepEqual(adaptedWithFrom.env, { FOO: "bar", DEVENV_ROOT: "/project" });
+  assert.deepEqual(adaptedWithFrom.args, [
+    "-c",
+    'dir="$1"; shift; cd "$dir" && exec "$@"',
+    "--",
+    "/project",
+    "devenv",
+    "mcp",
+    "--from",
+    "path:/custom",
+  ]);
 });

@@ -192,7 +192,7 @@ test("sanitizes failed tool call timeline events with null error", async () => {
   assert.equal(received[5].type, "session.turn");
 });
 
-test("suppresses MCP server initialization error messages from timeline events", async () => {
+test("forwards assistant messages to timeline events without dropping", async () => {
   let registeredProvider: any;
   let interceptedListener: ((event: any) => void) | undefined;
 
@@ -222,52 +222,26 @@ test("suppresses MCP server initialization error messages from timeline events",
 
   assert.ok(interceptedListener, "Listener should be attached");
 
-  // 1. MCP server initialization error assistant message should be suppressed
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
     item: {
       type: "assistant_message",
       id: "chunk-1",
-      text: "The MCP server 'devenv' failed to initialize: File devenv.nix does not exist. Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
-    },
-  });
-  assert.equal(received.length, 0, "MCP error message should not be delivered to timeline");
-
-  // 2. Subsequent chunk with same message id should also be suppressed
-  interceptedListener({
-    type: "timeline.item",
-    sessionId: "session-1",
-    item: {
-      type: "assistant_message",
-      id: "chunk-1",
-      text: "Additional chunk text",
-    },
-  });
-  assert.equal(received.length, 0, "Subsequent chunk with same id should be suppressed");
-
-  // 3. MCP error in reasoning item should also be suppressed
-  interceptedListener({
-    type: "timeline.item",
-    sessionId: "session-1",
-    item: {
-      type: "reasoning",
-      id: "chunk-2",
       text: "The MCP server 'playwright' failed to initialize: command not found",
     },
   });
-  assert.equal(received.length, 0, "Reasoning MCP error should also be suppressed");
+  assert.equal(received.length, 1, "Assistant message should be delivered to timeline");
 
-  // 4. Normal assistant message should be passed through
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
     item: {
       type: "assistant_message",
-      id: "chunk-3",
+      id: "chunk-2",
       text: "Here is the code you requested.",
     },
   });
-  assert.equal(received.length, 1);
-  assert.equal(received[0].item.text, "Here is the code you requested.");
+  assert.equal(received.length, 2);
+  assert.equal(received[1].item.text, "Here is the code you requested.");
 });
