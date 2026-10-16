@@ -312,4 +312,66 @@ test("probeHttpServer returns ok: false on connection error or 401", async () =>
   assert.match((result as { reason: string }).reason, /connection failed|fetch failed|ECONNREFUSED/i);
 });
 
+test("contributeServer suppresses MCP initialization errors but preserves normal assistant messages across sessions", async () => {
+  let eventCallback: ((event: any) => void) | undefined;
+  const connection = {
+    send: async () => {},
+    onEvent: (cb: (event: any) => void) => {
+      eventCallback = cb;
+      return () => {};
+    },
+    close: async () => {},
+  };
+  let registered: any;
+  contributeServer(
+    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
+  );
+
+  const conn = await registered.connect({ versions: [1], capabilities: [] });
+  const received: any[] = [];
+  conn.onEvent((event: any) => received.push(event));
+
+  // 1. MCP initialization error event should be suppressed
+  const mcpErrorEvent = {
+    type: "timeline.item",
+    sessionId: "session-1",
+    item: {
+      type: "assistant_message",
+      id: "agent_message_chunk:1",
+      text: "The MCP server 'broken' failed to initialize: file not found. Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+    },
+  };
+  eventCallback!(mcpErrorEvent);
+  assert.equal(received.length, 0, "MCP error event should be suppressed");
+
+  // 2. Normal assistant message with identical sequence ID in subsequent session must NOT be suppressed
+  const normalEvent1 = {
+    type: "timeline.item",
+    sessionId: "session-2",
+    item: {
+      type: "assistant_message",
+      id: "agent_message_chunk:1",
+      text: "Here is the current state of the workspace:",
+    },
+  };
+  eventCallback!(normalEvent1);
+  assert.equal(received.length, 1, "Normal message should be delivered");
+  assert.equal(received[0].item.text, "Here is the current state of the workspace:");
+
+  // 3. Normal reasoning chunk with another sequence ID must also be delivered
+  const normalEvent2 = {
+    type: "timeline.item",
+    sessionId: "session-2",
+    item: {
+      type: "reasoning",
+      id: "agent_thought_chunk:1",
+      text: "Thinking about the workspace...",
+    },
+  };
+  eventCallback!(normalEvent2);
+  assert.equal(received.length, 2, "Reasoning message should be delivered");
+  assert.equal(received[1].item.text, "Thinking about the workspace...");
+});
+
 

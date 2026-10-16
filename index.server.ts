@@ -56,7 +56,6 @@ export default function contribute(
           return connection.send(await withMcpServers(input));
         },
         onEvent(listener) {
-          const mcpErrorItemIds = new Set<string>();
           return connection.onEvent((event: any) => {
             if (event.type === "timeline.item") {
               if (
@@ -75,11 +74,7 @@ export default function contribute(
                 event.item?.type === "assistant_message" ||
                 event.item?.type === "reasoning"
               ) {
-                if (
-                  mcpErrorItemIds.has(event.item.id) ||
-                  isMcpInitializationErrorMessage(event.item.text)
-                ) {
-                  mcpErrorItemIds.add(event.item.id);
+                if (isMcpInitializationErrorMessage(event.item?.text)) {
                   const cleanMessage = stripAnsi(event.item.text);
                   console.warn(
                     `[agy-provider] MCP initialization failure: ${cleanMessage}`,
