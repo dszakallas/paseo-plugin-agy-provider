@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -282,3 +283,181 @@ export function resolveMcpServers(
   }
   return result;
 }
+
+export type ProbeResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Probes a remote HTTP/SSE MCP server with a fast JSON-RPC initialize request.
+ * Returns failure on HTTP 401/403/5xx or connection errors.
+ */
+export async function probeHttpServer(
+  server: McpRemoteServer,
+  timeoutMs = 1500,
+): Promise<ProbeResult> {
+  try {
+    const res = await fetch(server.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(server.headers ?? {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "paseo-probe", version: "1.0.0" },
+        },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: `HTTP ${res.status} ${res.statusText || "Unauthorized"}` };
+    }
+    if (res.status >= 500) {
+      return { ok: false, reason: `HTTP ${res.status} ${res.statusText || "Server Error"}` };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, reason: err.message ?? "connection failed" };
+  }
+}
+
+/**
+ * Probes a stdio MCP server by spawning it and verifying it does not crash on startup.
+ */
+export async function probeStdioServer(
+  server: McpStdioServer,
+  cwd: string,
+  timeoutMs = 1500,
+): Promise<ProbeResult> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let proc: ChildProcess | null = null;
+    let timer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      if (proc) {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }
+    };
+
+    const done = (result: ProbeResult) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(result);
+    };
+
+    timer = setTimeout(() => {
+      // Process stayed alive without crashing within timeoutMs: consider viable.
+      done({ ok: true });
+    }, timeoutMs);
+
+    try {
+      proc = spawn(server.command, server.args ?? [], {
+        cwd,
+        env: { ...process.env, ...(server.env ?? {}) },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      proc.on("error", (err: any) => {
+        done({ ok: false, reason: err.message ?? "spawn failed" });
+      });
+
+      proc.on("exit", (code, signal) => {
+        if (code !== null && code !== 0) {
+          done({ ok: false, reason: `process exited with code ${code}` });
+        } else if (signal) {
+          done({ ok: false, reason: `process killed with signal ${signal}` });
+        } else {
+          done({ ok: false, reason: "process exited immediately" });
+        }
+      });
+
+      proc.stdout?.once("data", () => {
+        done({ ok: true });
+      });
+
+      proc.stdin?.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "paseo-probe", version: "1.0.0" },
+          },
+        }) + "\n",
+      );
+    } catch (err: any) {
+      done({ ok: false, reason: err.message ?? "failed to spawn" });
+    }
+  });
+}
+
+/**
+ * Probes an MCP server configuration before passing it to ACP.
+ */
+export async function probeMcpServer(
+  server: McpServerConfig,
+  cwd: string,
+  timeoutMs = 1500,
+): Promise<ProbeResult> {
+  if (server.type === "stdio") {
+    return probeStdioServer(server, cwd, timeoutMs);
+  }
+  return probeHttpServer(server, timeoutMs);
+}
+
+export interface FilterViableOptions {
+  warn?: McpWarn;
+  timeoutMs?: number;
+  existingServerNames?: Set<string>;
+}
+
+/**
+ * Preflight-checks resolved MCP servers, dropping any server that fails initialization
+ * so ACP does not abort the entire session turn upon failing to construct the agent executor.
+ */
+export async function filterViableMcpServers(
+  servers: Record<string, McpServerConfig>,
+  cwd: string,
+  options: FilterViableOptions = {},
+): Promise<Record<string, McpServerConfig>> {
+  const warn = options.warn ?? defaultWarn;
+  const timeoutMs = options.timeoutMs ?? 1500;
+  const existingNames = options.existingServerNames;
+
+  const entries = Object.entries(servers);
+  const results = await Promise.all(
+    entries.map(async ([name, server]) => {
+      // Do not probe existing servers provided by the host daemon (e.g. Paseo internal MCP)
+      if (existingNames?.has(name)) {
+        return [name, server] as const;
+      }
+      const probe = await probeMcpServer(server, cwd, timeoutMs);
+      if (!probe.ok) {
+        warn(`MCP server '${name}' skipped: failed initialization probe (${probe.reason}).`);
+        return null;
+      }
+      return [name, server] as const;
+    }),
+  );
+
+  const viable: Record<string, McpServerConfig> = {};
+  for (const entry of results) {
+    if (entry) {
+      viable[entry[0]] = entry[1];
+    }
+  }
+  return viable;
+}
+

@@ -2,6 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import { agyCommand } from "./server/command.ts";
 import {
+  filterViableMcpServers,
   isMcpInitializationErrorMessage,
   resolveMcpServers,
   stripAnsi,
@@ -10,12 +11,22 @@ import {
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = { type: string; config?: { cwd?: string; mcpServers?: Record<string, unknown> } };
 
-// Adds the MCP servers agy-cli would load. A failure here must never block the session.
-function withMcpServers<T>(input: T): T {
+// Adds the MCP servers agy-cli would load and preflight-checks them so unviable servers
+// never brick the ACP session executor. A failure here must never block the session.
+export async function withMcpServers<T>(input: T): Promise<T> {
   const open = input as unknown as ProviderInput;
   if (open?.type !== "session.open" || !open.config) return input;
   try {
-    const mcpServers = resolveMcpServers(open.config.cwd || process.cwd(), open.config.mcpServers);
+    const existingNames = new Set(Object.keys(open.config.mcpServers ?? {}));
+    const resolved = resolveMcpServers(open.config.cwd || process.cwd(), open.config.mcpServers);
+    const mcpServers = await filterViableMcpServers(
+      resolved,
+      open.config.cwd || process.cwd(),
+      {
+        existingServerNames: existingNames,
+        warn: (msg) => console.warn(`[agy-provider] ${msg}`),
+      },
+    );
     return { ...input, config: { ...open.config, mcpServers } };
   } catch (error) {
     console.warn(`[agy-provider] Failed to resolve MCP servers: ${(error as Error).message}`);
@@ -42,7 +53,7 @@ export default function contribute(
       return {
         ...connection,
         async send(input) {
-          return connection.send(withMcpServers(input));
+          return connection.send(await withMcpServers(input));
         },
         onEvent(listener) {
           const mcpErrorItemIds = new Set<string>();
@@ -73,14 +84,7 @@ export default function contribute(
                   console.warn(
                     `[agy-provider] MCP initialization failure: ${cleanMessage}`,
                   );
-                  event = {
-                    ...event,
-                    item: {
-                      type: "error",
-                      id: event.item.id,
-                      message: cleanMessage,
-                    },
-                  };
+                  return;
                 }
               }
             }

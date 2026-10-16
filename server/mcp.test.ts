@@ -6,11 +6,14 @@ import { test } from "node:test";
 import contributeServer from "../index.server.ts";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
+  filterViableMcpServers,
   findWorkspaceMcpConfigPaths,
   getGlobalMcpConfigPath,
   isMcpInitializationErrorMessage,
   loadMcpConfigFile,
   parseMcpServer,
+  probeHttpServer,
+  probeStdioServer,
   resolveMcpServers,
   stripAnsi,
 } from "./mcp.ts";
@@ -185,7 +188,14 @@ test("provider connection injects MCP servers into session.open only", async (t)
     if (previous === undefined) delete process.env.GEMINI_HOME;
     else process.env.GEMINI_HOME = previous;
   });
-  write(path.join(cwd, ".agents", "mcp_config.json"), { mcpServers: { local: { command: "tool" } } });
+  write(path.join(cwd, ".agents", "mcp_config.json"), {
+    mcpServers: {
+      local: {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}}))"],
+      },
+    },
+  });
 
   const sent: any[] = [];
   const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
@@ -201,7 +211,11 @@ test("provider connection injects MCP servers into session.open only", async (t)
 
   assert.deepEqual(sent[0].config.mcpServers, {
     paseo: { type: "http", url: "http://p/mcp" },
-    local: { type: "stdio", command: "tool" },
+    local: {
+      type: "stdio",
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}}))"],
+    },
   });
   assert.deepEqual(sent[1], { type: "session.interrupt", sessionId: "s" });
 });
@@ -243,4 +257,59 @@ test("stripAnsi removes ANSI escape sequences and normalizes whitespace", () => 
   assert.equal(stripAnsi(null as any), "");
   assert.equal(stripAnsi(undefined as any), "");
 });
+
+test("probeStdioServer detects missing commands and startup failures", async () => {
+  const missing = await probeStdioServer({ type: "stdio", command: "nonexistent-cmd-xyz" }, process.cwd(), 500);
+  assert.equal(missing.ok, false);
+  assert.match((missing as { reason: string }).reason, /spawn.*ENOENT/i);
+
+  const crash = await probeStdioServer(
+    { type: "stdio", command: "sh", args: ["-c", "exit 2"] },
+    process.cwd(),
+    500,
+  );
+  assert.equal(crash.ok, false);
+  assert.match((crash as { reason: string }).reason, /exited with code 2/);
+
+  const working = await probeStdioServer(
+    {
+      type: "stdio",
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}}))"],
+    },
+    process.cwd(),
+    1500,
+  );
+  assert.equal(working.ok, true);
+});
+
+test("filterViableMcpServers filters out failing servers and preserves viable and existing ones", async () => {
+  const { messages, warn } = collector();
+  const input = {
+    paseo: { type: "http" as const, url: "http://127.0.0.1:1/unreachable" },
+    working: {
+      type: "stdio" as const,
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}}))"],
+    },
+    broken: { type: "stdio" as const, command: "nonexistent-cmd-12345" },
+  };
+
+  const filtered = await filterViableMcpServers(input, process.cwd(), {
+    existingServerNames: new Set(["paseo"]),
+    warn,
+    timeoutMs: 500,
+  });
+
+  assert.deepEqual(Object.keys(filtered).sort(), ["paseo", "working"]);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /MCP server 'broken' skipped: failed initialization probe/);
+});
+
+test("probeHttpServer returns ok: false on connection error or 401", async () => {
+  const result = await probeHttpServer({ type: "http", url: "http://127.0.0.1:1/unreachable" }, 200);
+  assert.equal(result.ok, false);
+  assert.match((result as { reason: string }).reason, /connection failed|fetch failed|ECONNREFUSED/i);
+});
+
 

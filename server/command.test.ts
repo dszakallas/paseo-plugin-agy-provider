@@ -192,7 +192,7 @@ test("sanitizes failed tool call timeline events with null error", async () => {
   assert.equal(received[5].type, "session.turn");
 });
 
-test("transforms MCP initialization errors to error timeline items and forwards regular messages", async () => {
+test("suppresses MCP initialization errors from UI while logging and forwards regular messages", async () => {
   let registeredProvider: any;
   let interceptedListener: ((event: any) => void) | undefined;
 
@@ -222,7 +222,7 @@ test("transforms MCP initialization errors to error timeline items and forwards 
 
   assert.ok(interceptedListener, "Listener should be attached");
 
-  // Initial chunk of an MCP initialization error with ANSI codes
+  // Initial chunk of an MCP initialization error with ANSI codes (suppressed from UI)
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
@@ -232,14 +232,9 @@ test("transforms MCP initialization errors to error timeline items and forwards 
       text: "The MCP server 'playwright' failed to initialize: \x1b[31mcommand not found\x1b[0m",
     },
   });
-  assert.equal(received.length, 1);
-  assert.deepEqual(received[0].item, {
-    type: "error",
-    id: "chunk-1",
-    message: "The MCP server 'playwright' failed to initialize: command not found",
-  });
+  assert.equal(received.length, 0, "MCP error chunk should be suppressed from timeline");
 
-  // Follow-up chunk for the same item ID is also transformed to an error item
+  // Follow-up chunk for the same item ID is also suppressed
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
@@ -249,14 +244,9 @@ test("transforms MCP initialization errors to error timeline items and forwards 
       text: "Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
     },
   });
-  assert.equal(received.length, 2);
-  assert.deepEqual(received[1].item, {
-    type: "error",
-    id: "chunk-1",
-    message: "Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
-  });
+  assert.equal(received.length, 0, "Follow-up error chunk should be suppressed from timeline");
 
-  // Regular assistant message is preserved without modification
+  // Regular assistant message is preserved and delivered to timeline
   interceptedListener({
     type: "timeline.item",
     sessionId: "session-1",
@@ -266,8 +256,8 @@ test("transforms MCP initialization errors to error timeline items and forwards 
       text: "Here is the code you requested.",
     },
   });
-  assert.equal(received.length, 3);
-  assert.deepEqual(received[2].item, {
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0].item, {
     type: "assistant_message",
     id: "chunk-2",
     text: "Here is the code you requested.",
