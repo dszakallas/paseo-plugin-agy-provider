@@ -190,6 +190,38 @@ test("sanitizes failed tool call timeline events with null error", async () => {
   });
   assert.equal(received.length, 6);
   assert.equal(received[5].type, "session.turn");
+
+  // 7. Enriches unknown tool call to typed shell tool call
+  interceptedListener({
+    type: "timeline.item",
+    sessionId: "session-1",
+    item: {
+      type: "tool_call",
+      callId: "call-5",
+      name: "run_command",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: {
+          command_line: "git status",
+          working_dir: "/repo",
+        },
+        output: {
+          combinedOutput: "On branch main\nnothing to commit",
+          exitCode: 0,
+        },
+      },
+    },
+  });
+  assert.equal(received.length, 7);
+  assert.deepEqual(received[6].item.detail, {
+    type: "shell",
+    command: "git status",
+    cwd: "/repo",
+    output: "On branch main\nnothing to commit",
+    exitCode: 0,
+  });
 });
 
 test("suppresses MCP initialization errors from UI while logging and forwards regular messages", async () => {

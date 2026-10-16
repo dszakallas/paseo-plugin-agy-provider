@@ -7,6 +7,7 @@ import {
   resolveMcpServers,
   stripAnsi,
 } from "./server/mcp.ts";
+import { enrichToolCall } from "./server/tools.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = { type: string; config?: { cwd?: string; mcpServers?: Record<string, unknown> } };
@@ -58,17 +59,10 @@ export default function contribute(
         onEvent(listener) {
           return connection.onEvent((event: any) => {
             if (event.type === "timeline.item") {
-              if (
-                event.item?.type === "tool_call" &&
-                event.item?.status === "failed" &&
-                event.item?.error == null
-              ) {
+              if (event.item?.type === "tool_call") {
                 event = {
                   ...event,
-                  item: {
-                    ...event.item,
-                    error: event.item.detail?.output ?? "Tool call failed",
-                  },
+                  item: enrichToolCall(event.item),
                 };
               } else if (
                 event.item?.type === "assistant_message" ||
