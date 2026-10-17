@@ -62,10 +62,12 @@ export default function contribute(
         },
         onEvent(listener) {
           const pendingQuotaErrors = new Map<string, string>();
+          const pendingMcpErrors = new Map<string, string>();
           return connection.onEvent((event: any) => {
             if (event.type === "session.turn") {
               if (event.state === "started") {
                 pendingQuotaErrors.delete(event.sessionId);
+                pendingMcpErrors.delete(event.sessionId);
               } else if (event.state === "completed" || event.state === "canceled") {
                 const pendingQuota = pendingQuotaErrors.get(event.sessionId);
                 if (pendingQuota) {
@@ -76,6 +78,19 @@ export default function contribute(
                     error: {
                       message: pendingQuota,
                       code: "quota_exhausted",
+                    },
+                  });
+                  return;
+                }
+                const pendingMcp = pendingMcpErrors.get(event.sessionId);
+                if (pendingMcp) {
+                  pendingMcpErrors.delete(event.sessionId);
+                  listener({
+                    ...event,
+                    state: "failed",
+                    error: {
+                      message: pendingMcp,
+                      code: "mcp_initialization_failed",
                     },
                   });
                   return;
@@ -94,9 +109,23 @@ export default function contribute(
                   });
                   return;
                 }
+                const pendingMcp = pendingMcpErrors.get(event.sessionId);
+                pendingMcpErrors.delete(event.sessionId);
+                if (pendingMcp) {
+                  listener({
+                    ...event,
+                    error: {
+                      message: pendingMcp,
+                      code: "mcp_initialization_failed",
+                      diagnostic: event.error?.diagnostic,
+                    },
+                  });
+                  return;
+                }
               }
             } else if (event.type === "session.closed") {
               pendingQuotaErrors.delete(event.sessionId);
+              pendingMcpErrors.delete(event.sessionId);
             } else if (event.type === "timeline.item") {
               if (event.item?.type === "tool_call") {
                 event = {
@@ -118,6 +147,10 @@ export default function contribute(
                   console.warn(
                     `[agy-provider] MCP initialization failure: ${cleanMessage}`,
                   );
+                  const existing = pendingMcpErrors.get(event.sessionId);
+                  if (!existing || cleanMessage.length > existing.length) {
+                    pendingMcpErrors.set(event.sessionId, cleanMessage);
+                  }
                   return;
                 }
               }

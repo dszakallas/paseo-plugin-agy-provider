@@ -281,6 +281,21 @@ test("probeStdioServer detects missing commands and startup failures", async () 
     1500,
   );
   assert.equal(working.ok, true);
+
+  const rejectsDiscover = await probeStdioServer(
+    {
+      type: "stdio",
+      command: process.execPath,
+      args: [
+        "-e",
+        "let d = ''; process.stdin.on('data', c => { d += c; if (d.includes('server/discover')) { process.exit(1); } });",
+      ],
+    },
+    process.cwd(),
+    1500,
+  );
+  assert.equal(rejectsDiscover.ok, false);
+  assert.match((rejectsDiscover as { reason: string }).reason, /exited with code 1/);
 });
 
 test("filterViableMcpServers filters out failing servers and preserves viable and existing ones", async () => {
@@ -345,7 +360,27 @@ test("contributeServer suppresses MCP initialization errors but preserves normal
   eventCallback!(mcpErrorEvent);
   assert.equal(received.length, 0, "MCP error event should be suppressed");
 
-  // 2. Normal assistant message with identical sequence ID in subsequent session must NOT be suppressed
+  // 2. Completed turn in session-1 must be converted to failed turn with mcp_initialization_failed
+  eventCallback!({
+    type: "session.turn",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    state: "completed",
+  });
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0], {
+    type: "session.turn",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    state: "failed",
+    error: {
+      message:
+        "The MCP server 'broken' failed to initialize: file not found. Fix the MCP server, or remove it from your configuration and start a new session, to continue.",
+      code: "mcp_initialization_failed",
+    },
+  });
+
+  // 3. Normal assistant message with identical sequence ID in subsequent session must NOT be suppressed
   const normalEvent1 = {
     type: "timeline.item",
     sessionId: "session-2",
@@ -356,10 +391,10 @@ test("contributeServer suppresses MCP initialization errors but preserves normal
     },
   };
   eventCallback!(normalEvent1);
-  assert.equal(received.length, 1, "Normal message should be delivered");
-  assert.equal(received[0].item.text, "Here is the current state of the workspace:");
+  assert.equal(received.length, 2, "Normal message should be delivered");
+  assert.equal(received[1].item.text, "Here is the current state of the workspace:");
 
-  // 3. Normal reasoning chunk with another sequence ID must also be delivered
+  // 4. Normal reasoning chunk with another sequence ID must also be delivered
   const normalEvent2 = {
     type: "timeline.item",
     sessionId: "session-2",
@@ -370,8 +405,8 @@ test("contributeServer suppresses MCP initialization errors but preserves normal
     },
   };
   eventCallback!(normalEvent2);
-  assert.equal(received.length, 2, "Reasoning message should be delivered");
-  assert.equal(received[1].item.text, "Thinking about the workspace...");
+  assert.equal(received.length, 3, "Reasoning message should be delivered");
+  assert.equal(received[2].item.text, "Thinking about the workspace...");
 });
 
 

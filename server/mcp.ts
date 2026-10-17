@@ -385,18 +385,28 @@ export async function probeStdioServer(
         done({ ok: true });
       });
 
-      proc.stdin?.write(
+      proc.stdin?.on("error", () => {});
+
+      const discoverMsg =
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
+          method: "server/discover",
+          params: {},
+        }) + "\n";
+      const initMsg =
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
           method: "initialize",
           params: {
             protocolVersion: "2024-11-05",
             capabilities: {},
             clientInfo: { name: "paseo-probe", version: "1.0.0" },
           },
-        }) + "\n",
-      );
+        }) + "\n";
+
+      proc.stdin?.write(discoverMsg + initMsg);
     } catch (err: any) {
       done({ ok: false, reason: err.message ?? "failed to spawn" });
     }
