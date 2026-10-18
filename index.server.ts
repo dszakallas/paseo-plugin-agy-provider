@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import { agyCommand } from "./server/command.ts";
@@ -57,10 +58,13 @@ export default function contribute(
       const connection = await provider.connect(request);
       return {
         ...connection,
-        async send(input) {
+        async send(input: any) {
+          if ((input?.type === "catalog" || input?.type === "sessions") && (!input.cwd || input.cwd === "/")) {
+            input = { ...input, cwd: homedir() };
+          }
           return connection.send(await withMcpServers(input));
         },
-        onEvent(listener) {
+        onEvent(listener: any) {
           const pendingQuotaErrors = new Map<string, string>();
           const pendingMcpErrors = new Map<string, string>();
           return connection.onEvent((event: any) => {

@@ -220,6 +220,27 @@ test("provider connection injects MCP servers into session.open only", async (t)
   assert.deepEqual(sent[1], { type: "session.interrupt", sessionId: "s" });
 });
 
+test("provider connection supplies fallback cwd for catalog and sessions when omitted or root", async () => {
+  const sent: any[] = [];
+  const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
+  let registered: any;
+  contributeServer(
+    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
+  );
+
+  const conn = await registered.connect({ versions: [1], capabilities: [] });
+  await conn.send({ type: "catalog", requestId: "req-1" });
+  await conn.send({ type: "catalog", requestId: "req-2", cwd: "/" });
+  await conn.send({ type: "catalog", requestId: "req-3", cwd: "/custom/path" });
+  await conn.send({ type: "sessions", requestId: "req-4" });
+
+  assert.equal(sent[0].cwd, os.homedir());
+  assert.equal(sent[1].cwd, os.homedir());
+  assert.equal(sent[2].cwd, "/custom/path");
+  assert.equal(sent[3].cwd, os.homedir());
+});
+
 test("isMcpInitializationErrorMessage identifies ACP MCP initialization failure text", () => {
   const sample =
     "The MCP server 'myserver' failed to initialize:  \x1b[31m× \x1b[0m File not found. " +
