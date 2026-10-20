@@ -44,10 +44,13 @@ test("parseMcpServer infers transport and maps serverUrl to url", () => {
     server: { type: "http", url: "https://x/mcp", headers: { Authorization: "Bearer t" } },
     oauth: false,
   });
-  assert.deepEqual(parseMcpServer({ type: "sse", url: "https://x/sse" }, "r", warn)?.server, {
-    type: "sse",
+  const { messages: sseWarn, warn: sseCollector } = collector();
+  assert.deepEqual(parseMcpServer({ type: "sse", url: "https://x/sse" }, "r", sseCollector)?.server, {
+    type: "http",
     url: "https://x/sse",
   });
+  assert.equal(sseWarn.length, 1);
+  assert.match(sseWarn[0], /legacy HTTP\+SSE/);
 });
 
 test("parseMcpServer rejects invalid entries with a warning and keeps disabled ones", () => {
@@ -81,6 +84,14 @@ test("loadMcpConfigFile survives missing, empty and malformed files", (t) => {
   assert.match(messages[0], /invalid JSON/);
   write(path.join(dir, "mixed.json"), { mcpServers: { good: { command: "ok" }, bad: { type: "http" }, off: { command: "x", disabled: true } } });
   assert.deepEqual(Object.keys(loadMcpConfigFile(path.join(dir, "mixed.json"), warn)), ["good"]);
+});
+
+test("parseMcpServer warns that alwaysLoad is a settings key, not a config field", () => {
+  const { messages, warn } = collector();
+  const entry = parseMcpServer({ command: "x", alwaysLoad: true }, "s", warn);
+  assert.deepEqual(entry?.server, { type: "stdio", command: "x" });
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /'alwaysLoad' is an Antigravity settings key/);
 });
 
 test("global config path honors geminiDir", () => {
@@ -201,7 +212,7 @@ test("provider connection injects MCP servers into session.open only", async (t)
   const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 
@@ -225,7 +236,7 @@ test("provider connection supplies fallback cwd for catalog and sessions when om
   const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 
@@ -360,7 +371,7 @@ test("contributeServer suppresses MCP initialization errors but preserves normal
   };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 

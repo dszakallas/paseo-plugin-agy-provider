@@ -11,12 +11,12 @@ export type McpStdioServer = {
 };
 
 export type McpRemoteServer = {
-  type: "http" | "sse";
+  type: "http";
   url: string;
   headers?: Record<string, string>;
 };
 
-export type McpServerConfig = (McpStdioServer | McpRemoteServer) & { alwaysLoad?: boolean };
+export type McpServerConfig = McpStdioServer | McpRemoteServer;
 
 /** A parsed config entry. `server: null` means the entry is explicitly disabled. */
 type McpEntry = { server: McpServerConfig | null; oauth: boolean };
@@ -31,8 +31,9 @@ export interface McpResolveOptions {
 
 const LOG_PREFIX = "[agy-provider]";
 const WORKSPACE_DIRS = [".agents", ".agent", "_agents", "_agent"];
-// Fields agy-cli understands that cannot be expressed in Paseo's MCP server schema.
-const UNSUPPORTED_FIELDS = ["cwd", "authProviderType", "disabledTools"];
+const UNSUPPORTED_FIELDS = ["cwd", "authProviderType", "disabledTools", "enabledTools", "timeoutSeconds", "tools"];
+const LEGACY_SSE_NOTE = `"type": "sse" is legacy HTTP+SSE transport; ` +
+  `treating it as streamable HTTP. Point 'url' at a streamable HTTP endpoint.`;
 
 const defaultWarn: McpWarn = (message) => console.warn(`${LOG_PREFIX} ${message}`);
 
@@ -86,14 +87,19 @@ export function parseMcpServer(raw: unknown, name = "server", warn: McpWarn = de
       warn(`MCP server '${name}' ignored: remote server requires 'serverUrl'.`);
       return null;
     }
-    server = { type, url };
+    if (type === "sse") {
+      warn(`MCP server '${name}': ${LEGACY_SSE_NOTE}`);
+    }
+    server = { type: "http", url };
     const headers = stringRecord(raw.headers);
     if (headers) server.headers = headers;
   } else {
     warn(`MCP server '${name}' ignored: needs either 'command' or 'serverUrl'.`);
     return null;
   }
-  if (typeof raw.alwaysLoad === "boolean") server.alwaysLoad = raw.alwaysLoad;
+  if (typeof raw.alwaysLoad === "boolean") {
+    warn(`MCP server '${name}': 'alwaysLoad' is an Antigravity settings key, not an MCP config field; ignored.`);
+  }
   return { server, oauth: isRecord(raw.oauth) };
 }
 
@@ -142,10 +148,14 @@ export function getGeminiDir(options: McpResolveOptions = {}): string {
 
 export function getGlobalMcpConfigPaths(options: McpResolveOptions = {}): string[] {
   const geminiDir = getGeminiDir(options);
+  // Verified on disk: agy keeps its own data in `~/.gemini/antigravity-cli/`
+  // (mcp_config.json and mcp_oauth_tokens.json exist there), its customization
+  // configs live in `~/.gemini/config/` (per its embedded docs), and a legacy
+  // root-level path remains honored by the migration code.
   const candidates = [
-    path.join(geminiDir, "config", "mcp_config.json"),
     path.join(geminiDir, "antigravity-cli", "mcp_config.json"),
-    path.join(geminiDir, "antigravity", "mcp_config.json"),
+    path.join(geminiDir, "config", "mcp_config.json"),
+    path.join(geminiDir, "mcp_config.json"),
   ];
   const existing: string[] = [];
   for (const c of candidates) {
@@ -161,9 +171,16 @@ export function getGlobalMcpConfigPath(options: McpResolveOptions = {}): string 
 
 export function getOAuthTokensPath(options: McpResolveOptions = {}): string {
   const geminiDir = getGeminiDir(options);
-  const cliPath = path.join(geminiDir, "antigravity-cli", "mcp_oauth_tokens.json");
-  if (fs.existsSync(cliPath)) return cliPath;
-  return path.join(geminiDir, "antigravity", "mcp_oauth_tokens.json");
+  const candidates = [
+    path.join(geminiDir, "antigravity-cli", "mcp_oauth_tokens.json"),
+    path.join(geminiDir, "config", "mcp_oauth_tokens.json"),
+    path.join(geminiDir, "antigravity", "mcp_oauth_tokens.json"),
+    path.join(geminiDir, "mcp_oauth_tokens.json"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return candidates[0];
 }
 
 /**
