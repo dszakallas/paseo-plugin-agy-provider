@@ -4,9 +4,9 @@ Verified on 2026-09-11 with Paseo **0.8.0**, `@getpaseo/plugin` **0.8.0**, and G
 
 ## Support range
 
-The plugin manifest requires `paseo: ">=0.8.0 <0.13.0"`.
+The plugin manifest requires `paseo: ">=0.12.0 <1.0.0"`.
 
-The automated manifest test uses Paseo's actual compatibility checker for both app and daemon. It accepts 0.8.0, 0.8.1, 0.9.0-beta.1, 0.9.0, 0.10.0, 0.10.1, 0.11.0, 0.11.1, 0.12.0, and 0.12.1, and rejects 0.7.2, 0.13.0-beta.1, 0.13.0, 0.13.1, and 1.0.0. Paseo checks the stable core of prerelease versions, so the upper bound also excludes 0.13 prereleases.
+The automated manifest test uses Paseo's actual compatibility checker for both app and daemon. It accepts 0.12.0-beta.1, 0.12.0, 0.12.1, 0.13.0-beta.1, 0.13.0, 0.13.1, and 0.99.0, and rejects 0.8.0, 0.11.4, 1.0.0-beta.1, 1.0.0, 1.0.1, and 2.0.0. Paseo checks the stable core of prerelease versions, so the upper bound also excludes 1.0 prereleases.
 
 On 2026-10-02, type checking and all Node tests passed on macOS with SDK 0.8.0 and with SDK 0.9.0 in an isolated temporary copy.
 
