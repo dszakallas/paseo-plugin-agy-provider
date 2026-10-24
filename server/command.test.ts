@@ -8,13 +8,13 @@ import contributeServer from "../index.server.ts";
 import type { PluginClientContext, PluginWorkspaceCommandContext } from "@getpaseo/plugin/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
-test("manifest accepts Paseo >=0.8.0 <0.13.0 for both runtimes", () => {
+test("manifest accepts every Paseo version below 1.0.0 for both runtimes", () => {
   const manifest = JSON.parse(readFileSync(new URL("../paseo-plugin.json", import.meta.url), "utf8"));
   for (const runtime of ["app", "daemon"] as const) {
-    for (const version of ["0.8.0", "0.8.1", "0.9.0-beta.1", "0.9.0", "0.10.0", "0.10.1", "0.11.0-beta.1", "0.11.0", "0.11.1", "0.12.0-beta.1", "0.12.0", "0.12.1"]) {
+    for (const version of ["0.8.0", "0.8.1", "0.9.0-beta.1", "0.9.0", "0.10.0", "0.10.1", "0.11.0-beta.1", "0.11.0", "0.11.1", "0.12.0-beta.1", "0.12.0", "0.12.1", "0.13.0-beta.1", "0.13.0", "0.13.1", "0.99.0"]) {
       assert.doesNotThrow(() => assertPluginCompatibility({ ...manifest, runtime, version }));
     }
-    for (const version of ["0.7.2", "0.13.0-beta.1", "0.13.0", "0.13.1", "1.0.0"]) {
+    for (const version of ["0.7.2", "1.0.0-beta.1", "1.0.0", "1.0.1", "2.0.0"]) {
       assert.throws(() => assertPluginCompatibility({ ...manifest, runtime, version }), /requires Paseo/);
     }
   }
