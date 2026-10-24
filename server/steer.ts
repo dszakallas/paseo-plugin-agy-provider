@@ -57,12 +57,19 @@ function queueDir(conversationId: string): string {
   return path.join(steerRootDir(), "queue", safeId(conversationId));
 }
 
+/**
+ * Monotonic per-process sequence, so messages queued within the same
+ * millisecond still drain in the order the user sent them.
+ */
+let enqueueSequence = 0;
+
 /** Queues a steer message for the given Antigravity conversation. */
 export function enqueueSteer(conversationId: string, text: string): void {
   const dir = queueDir(conversationId);
   fs.mkdirSync(dir, { recursive: true });
   pruneStale(dir);
-  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.json`;
+  const sequence = String(enqueueSequence++).padStart(6, "0");
+  const name = `${Date.now()}-${sequence}.json`;
   const tmp = path.join(dir, `${name}.tmp`);
   // The hook emits this string verbatim inside {"userMessage": ...}.
   fs.writeFileSync(tmp, JSON.stringify(text), { mode: 0o600 });
