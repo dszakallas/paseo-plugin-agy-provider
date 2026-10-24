@@ -1,6 +1,6 @@
 # agy-provider
 
-Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/docs/plugins/providers) **0.8–0.12** (`>=0.8.0 <0.13.0`). This is a community-maintained plugin. Real-agent verification covers 0.8.0; the stable 0.9.0 SDK has passed type and automated compatibility checks, with live sessions still unverified. Paseo 0.10+ is allowed by the manifest.
+Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/docs/plugins/providers) **0.12 and later** (`>=0.12.0 <1.0.0`). This is a community-maintained plugin. Paseo 0.8 through 0.11 are no longer supported.
 
 > [!NOTE]
 > **Paseo 0.11 and later include native Antigravity support.** This plugin provides an alternative that directly drives the official ACP binary.
@@ -9,11 +9,9 @@ Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/doc
 > **Paseo's injected system prompts and the instructions they contain are not applied.**
 > Official ACP server 1.1.1 ignores these instructions. Workflows that rely on them are unsupported by this plugin. Review this limitation before installing.
 
-**Known issue in Paseo 0.8.0:** streamed replies can appear as separate blocks with large gaps, splitting words, lists, and Markdown formatting ([paseo#4699](https://github.com/getpaseo/paseo/issues/4699)). **Paseo 0.9.0 includes the upstream ACP fix** ([#4701](https://github.com/getpaseo/paseo/pull/4701)); the original Antigravity session has not been reverified. The fix comes from the daemon's ACP runtime; updating this plugin alone does not fix a 0.8.0 daemon.
-
 ![Antigravity in Paseo](images/demo.gif)
 
-Captured model picker and conversation in Paseo 0.8.0. [Desktop](images/conversation.jpg) · [Compact layout](images/compact.jpg)
+Provider model picker and conversation. [Desktop](images/conversation.jpg) · [Compact layout](images/compact.jpg)
 
 ## Installation
 
@@ -41,7 +39,7 @@ Set this in the environment that starts the daemon; exporting it in another term
 paseo plugin add 3ae3ae/paseo-plugin-agy-provider
 ```
 
-For an existing installation, run `paseo plugin update agy-provider`. Both the client and daemon must use Paseo `>=0.8.0 <0.13.0` and a plugin revision with the matching version requirement. The login menu requires plugin v0.1.1+; older revisions restricted to 0.8 must be updated for 0.9.
+For an existing installation, run `paseo plugin update agy-provider`. Both the client and daemon must use Paseo `>=0.12.0 <1.0.0` and a plugin revision with the matching version requirement.
 
 ### 3. Log in
 
@@ -84,8 +82,7 @@ paseo plugin remove agy-provider
 
 Update the official server separately. Removing the plugin leaves Google's server, credentials, and conversations intact.
 
-- **Paseo 0.8:** release-pinned installations do not track updates; remove and re-add with a newer `--ref` to change the pin.
-- **Paseo 0.9:** `plugin update` previews the proposed revision and asks for confirmation. Add `--check` to preview only or `--yes` to approve without a prompt. Git updates target the default branch HEAD regardless of the initial `--ref`; that selector is not a persistent pin. To select a specific tag or commit, run `paseo plugin update agy-provider --ref <tag-or-commit>` (applies without another confirmation). See the [update reference](https://paseo.sh/docs/plugins/reference#cli-reference).
+- `plugin update` previews the proposed revision and asks for confirmation. Add `--check` to preview only or `--yes` to approve without a prompt. Git updates target the default branch HEAD regardless of the initial `--ref`; that selector is not a persistent pin. To select a specific tag or commit, run `paseo plugin update agy-provider --ref <tag-or-commit>` (applies without another confirmation). See the [update reference](https://paseo.sh/docs/plugins/reference#cli-reference).
 
 ## MCP servers
 
@@ -125,9 +122,9 @@ See [VERIFICATION.md](VERIFICATION.md) for tested behavior and versions.
 | Executable not found | Daemon PATH or `PASEO_AGY_ACP_BIN`. |
 | `Internal error` opening a session | Keep the companion executable beside the server; extract the full archive. |
 | `Authentication required` | Use the login action, or check API-key configuration. |
-| Login menu missing | Update the plugin, use a Paseo 0.8+ client, and open a workspace. |
-| Plugin rejected on Paseo 0.9 | Update to a plugin revision whose manifest requires `>=0.8.0 <0.13.0`; check the client and daemon versions. |
-| Plugin rejected on Paseo 0.13 or later | This plugin requires `<0.13.0`. |
+| Login menu missing | Update the plugin, use a Paseo 0.12+ client, and open a workspace. |
+| Plugin rejected on Paseo 0.11 or earlier | This plugin requires `>=0.12.0`; update Paseo or use an older plugin revision. |
+| Plugin rejected on Paseo 1.0 or later | This plugin requires `<1.0.0`. |
 | No models after login | Reload the plugin; check `paseo provider diagnostic agy`. |
 
 Plugin startup logs: `paseo plugin logs agy-provider`. Remove credentials, OAuth links, and private content before sharing logs.
@@ -141,7 +138,7 @@ npm test
 paseo plugin install /absolute/path/to/paseo-plugin-agy-provider
 ```
 
-The provider uses `runAcpProvider()`; the login action reuses Paseo's terminal. There are no plugin runtime dependencies or build steps. The development SDK stays at 0.8.0 to check the oldest supported API; Paseo supplies the runtime SDK. CI runs type checks and tests against SDKs 0.8.0 and 0.9.0 on macOS, Linux, and Windows. Keep the manifest compatible with 0.8: its strict schema rejects the `description` field introduced in 0.9.
+The provider uses `runAcpProvider()`; the login action reuses Paseo's terminal. There are no plugin runtime dependencies or build steps. The development SDK is pinned to 0.12.0 to check the oldest supported API; Paseo supplies the runtime SDK. CI runs type checks and tests on macOS, Linux, and Windows.
 
 [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security reports](SECURITY.md)
 
