@@ -14,9 +14,14 @@ import {
 } from "./server/quota.ts";
 import { enrichToolCall } from "./server/tools.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
+import { installProgressHook, removeProgressHook } from "./server/progress.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
-type ProviderInput = { type: string; config?: { cwd?: string; mcpServers?: Record<string, unknown> } };
+type ProviderInput = {
+  type: string;
+  sessionId?: string;
+  config?: { cwd?: string; systemPrompt?: string; mcpServers?: Record<string, unknown> };
+};
 
 /** Concatenates the text parts of a prompt. */
 function promptText(prompt: { input?: { type?: string; content?: unknown } }): string {
@@ -66,15 +71,26 @@ export default function contribute(
     command: agyCommand(),
   });
 
-  // Steering needs a PreInvocation hook in Antigravity's global config.
+  // Steering needs a PreInvocation hook and progress narration a SessionStart
+  // hook in Antigravity's global config.
   try {
-    const installed = installSteerHook();
-    if (installed.changed) {
-      console.log(`[agy-provider] Installed steering hook in ${installed.path}`);
+    const steerHook = installSteerHook();
+    if (steerHook.changed) {
+      console.log(`[agy-provider] Installed steering hook in ${steerHook.path}`);
+    }
+    const progressHook = installProgressHook();
+    if (progressHook.changed) {
+      console.log(`[agy-provider] Installed progress hook in ${progressHook.path}`);
     }
   } catch (error) {
-    console.warn(`[agy-provider] Could not install steering hook: ${(error as Error).message}`);
+    console.warn(`[agy-provider] Could not install hooks: ${(error as Error).message}`);
   }
+
+  // Marks sessions launched here, so the progress hook speaks only for them.
+  server.before("agent.session_open", ({ request }) => {
+    if (request.provider !== "agy" || request.env.PASEO_AGY_PROGRESS === "1") return;
+    return { ...request, env: { ...request.env, PASEO_AGY_PROGRESS: "1" } };
+  });
   server.registerProvider({
     ...provider,
     async connect(request) {
@@ -84,6 +100,8 @@ export default function contribute(
       const pendingMcpErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
       const conversationIds = new Map<string, string>();
+      const pendingSystemPrompts = new Map<string, string>();
+      const prependedSystemPrompts = new Map<string, string>();
 
       const emit = (event: any) => {
         for (const listener of listeners) listener(event);
@@ -166,12 +184,38 @@ export default function contribute(
           pendingMcpErrors.delete(event.sessionId);
           activeTurns.delete(event.sessionId);
           conversationIds.delete(event.sessionId);
+          pendingSystemPrompts.delete(event.sessionId);
+          prependedSystemPrompts.delete(event.sessionId);
         } else if (event.type === "timeline.item") {
           if (event.item?.type === "tool_call") {
             event = {
               ...event,
               item: enrichToolCall(event.item),
             };
+          } else if (event.item?.type === "user_message") {
+            const prepended = prependedSystemPrompts.get(event.sessionId);
+            if (prepended && typeof event.item.text === "string") {
+              const prefix = `${prepended}\n\n`;
+              if (event.item.text.startsWith(prefix)) {
+                prependedSystemPrompts.delete(event.sessionId);
+                event = {
+                  ...event,
+                  item: {
+                    ...event.item,
+                    text: event.item.text.slice(prefix.length),
+                  },
+                };
+              } else if (event.item.text === prepended) {
+                prependedSystemPrompts.delete(event.sessionId);
+                event = {
+                  ...event,
+                  item: {
+                    ...event.item,
+                    text: "",
+                  },
+                };
+              }
+            }
           } else if (
             event.item?.type === "assistant_message" ||
             event.item?.type === "reasoning"
@@ -207,6 +251,12 @@ export default function contribute(
         ...connection,
         capabilities,
         async send(input: any) {
+          if (input?.type === "session.open") {
+            const systemPrompt = input.config?.systemPrompt;
+            if (typeof systemPrompt === "string" && systemPrompt.trim().length > 0) {
+              pendingSystemPrompts.set(input.sessionId, systemPrompt.trim());
+            }
+          }
           if (input?.type === "session.prompt" && input.prompt?.delivery === "steer") {
             const turnId = activeTurns.get(input.sessionId);
             const text = promptText(input.prompt);
@@ -238,6 +288,46 @@ export default function contribute(
             // degrade to a normal prompt so the message is never dropped.
             input = { ...input, prompt: { ...input.prompt, delivery: "auto" } };
           }
+          if (input?.type === "session.prompt") {
+            const systemPrompt = pendingSystemPrompts.get(input.sessionId);
+            if (systemPrompt) {
+              pendingSystemPrompts.delete(input.sessionId);
+              prependedSystemPrompts.set(input.sessionId, systemPrompt);
+              if (input.prompt?.input?.type === "message" && Array.isArray(input.prompt.input.content)) {
+                const content = input.prompt.input.content;
+                const firstTextIndex = content.findIndex(
+                  (part: any) => part && typeof part === "object" && part.type === "text",
+                );
+                if (firstTextIndex >= 0) {
+                  input = {
+                    ...input,
+                    prompt: {
+                      ...input.prompt,
+                      input: {
+                        ...input.prompt.input,
+                        content: content.map((part: any, i: number) =>
+                          i === firstTextIndex
+                            ? { ...part, text: `${systemPrompt}\n\n${part.text}` }
+                            : part,
+                        ),
+                      },
+                    },
+                  };
+                } else {
+                  input = {
+                    ...input,
+                    prompt: {
+                      ...input.prompt,
+                      input: {
+                        ...input.prompt.input,
+                        content: [{ type: "text", text: systemPrompt }, ...content],
+                      },
+                    },
+                  };
+                }
+              }
+            }
+          }
           if ((input?.type === "catalog" || input?.type === "sessions") && (!input.cwd || input.cwd === "/")) {
             input = { ...input, cwd: homedir() };
           }
@@ -262,6 +352,7 @@ export default function contribute(
     // a plugin that no longer queues anything.
     try {
       removeSteerHook();
+      removeProgressHook();
     } catch {
       // Best effort.
     }

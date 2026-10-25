@@ -72,7 +72,7 @@ test("contributeServer intercepts quota exceeded assistant message and fails ses
   };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p) } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), before: () => () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 

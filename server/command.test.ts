@@ -89,6 +89,7 @@ test("sanitizes failed tool call timeline events with null error", async () => {
       registerProvider(provider: any) {
         registeredProvider = provider;
       },
+      before: () => () => {},
     } as unknown as PluginServerContext,
     ((options: any) => {
       providerOptions = options;
@@ -244,6 +245,7 @@ test("suppresses MCP initialization errors from UI while logging and forwards re
       registerProvider(provider: any) {
         registeredProvider = provider;
       },
+      before: () => () => {},
     } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "Antigravity", connect: async () => mockConnection })) as any,
   );
@@ -294,4 +296,103 @@ test("suppresses MCP initialization errors from UI while logging and forwards re
     id: "chunk-2",
     text: "Here is the code you requested.",
   });
+});
+
+test("prepends session systemPrompt to first prompt and sanitizes timeline user_message", async () => {
+  let registeredProvider: any;
+  let interceptedListener: ((event: any) => void) | undefined;
+  const sentInputs: any[] = [];
+
+  const mockConnection = {
+    capabilities: ["prompt.message"],
+    async send(input: any) {
+      sentInputs.push(input);
+    },
+    onEvent(listener: (event: any) => void) {
+      interceptedListener = listener;
+      return () => {
+        interceptedListener = undefined;
+      };
+    },
+    async close() {},
+  };
+
+  contributeServer(
+    {
+      registerProvider(provider: any) {
+        registeredProvider = provider;
+      },
+      before: () => () => {},
+    } as unknown as PluginServerContext,
+    (() => ({ id: "agy", label: "Antigravity", connect: async () => mockConnection })) as any,
+  );
+
+  const connection = await registeredProvider.connect({ versions: [1], capabilities: [] });
+  const timelineEvents: any[] = [];
+  connection.onEvent((event: any) => timelineEvents.push(event));
+
+  // 1. Open session with systemPrompt
+  await connection.send({
+    type: "session.open",
+    sessionId: "sess-123",
+    config: {
+      cwd: "/test",
+      systemPrompt: "You are an expert pair programmer.",
+    },
+  });
+
+  // 2. First prompt - should have system prompt prepended
+  await connection.send({
+    type: "session.prompt",
+    sessionId: "sess-123",
+    prompt: {
+      clientMessageId: "msg-1",
+      input: {
+        type: "message",
+        content: [{ type: "text", text: "Fix the bug." }],
+      },
+    },
+  });
+
+  assert.equal(sentInputs.length, 2);
+  const promptSent = sentInputs[1];
+  assert.equal(promptSent.type, "session.prompt");
+  assert.deepEqual(promptSent.prompt.input.content, [
+    { type: "text", text: "You are an expert pair programmer.\n\nFix the bug." },
+  ]);
+
+  // 3. ACP runtime echoes the modified text back as a user_message timeline event
+  interceptedListener!({
+    type: "timeline.item",
+    sessionId: "sess-123",
+    item: {
+      type: "user_message",
+      id: "msg-1",
+      text: "You are an expert pair programmer.\n\nFix the bug.",
+      clientMessageId: "msg-1",
+    },
+  });
+
+  // The emitted timeline event should be sanitized to the original user prompt
+  assert.equal(timelineEvents.length, 1);
+  assert.equal(timelineEvents[0].item.text, "Fix the bug.");
+
+  // 4. Second prompt - should NOT have system prompt prepended
+  await connection.send({
+    type: "session.prompt",
+    sessionId: "sess-123",
+    prompt: {
+      clientMessageId: "msg-2",
+      input: {
+        type: "message",
+        content: [{ type: "text", text: "What next?" }],
+      },
+    },
+  });
+
+  assert.equal(sentInputs.length, 3);
+  const secondPromptSent = sentInputs[2];
+  assert.deepEqual(secondPromptSent.prompt.input.content, [
+    { type: "text", text: "What next?" },
+  ]);
 });
