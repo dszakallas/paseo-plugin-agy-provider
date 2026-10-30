@@ -212,7 +212,7 @@ test("provider connection injects MCP servers into session.open only", async (t)
   const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {}, before: () => () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 
@@ -236,7 +236,7 @@ test("provider connection supplies fallback cwd for catalog and sessions when om
   const connection = { send: async (input: any) => void sent.push(input), onEvent: () => () => {}, close: async () => {} };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {}, before: () => () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 
@@ -371,7 +371,7 @@ test("contributeServer suppresses MCP initialization errors but preserves normal
   };
   let registered: any;
   contributeServer(
-    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {} } as unknown as PluginServerContext,
+    { registerProvider: (p: any) => void (registered = p), handle: () => {}, registerUsageSource: () => {}, before: () => () => {} } as unknown as PluginServerContext,
     (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
   );
 
