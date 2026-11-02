@@ -3,7 +3,11 @@
 Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/docs/plugins/providers). This is a community-maintained plugin.
 
 > [!NOTE]
-> **Paseo 0.11 and later include native Antigravity support.** This plugin provides an alternative that directly drives the official ACP binary with active-turn steering, progress narration, multi-source MCP discovery, and system prompt injection. See [DESIGN.md](DESIGN.md) for architecture details.
+> **Paseo 0.11 and later include native Antigravity support.** This repo is a maintained fork of
+> [3ae3ae/paseo-plugin-agy-provider](https://github.com/3ae3ae/paseo-plugin-agy-provider), and aims to
+> provide an alternative that directly drives the official ACP binary with active-turn steering,
+> progress narration, multi-source MCP discovery, and system prompt
+> injection. See [DESIGN.md](DESIGN.md) for architecture details.
 
 ## Installation
 
@@ -28,7 +32,7 @@ Set this in the environment that starts the daemon; exporting it in another term
 ### 2. Install the plugin
 
 ```sh
-paseo plugin add 3ae3ae/paseo-plugin-agy-provider
+paseo plugin add git:dszakallas/paseo-plugin-agy-provider
 ```
 
 For an existing installation, run `paseo plugin update agy-provider`.
@@ -99,7 +103,7 @@ MCP servers are loaded the way the `agy` CLI loads them and added to the servers
 ## Limitations
 
 - Real-agent verification covers macOS ARM64 and personal Google OAuth. Linux/Windows sessions, API-key and enterprise authentication, and physical mobile devices are unverified.
-- In-place steering and structured output guarantees are not implemented.
+- Structured output guarantees are not implemented.
 - The current server/shim can display duplicate tool rows.
 - The login action requires an open workspace and the default plugin ID `agy-provider`. For a remote daemon, authentication runs on that host; the helper does not relay OAuth callbacks to another machine.
 
@@ -110,7 +114,6 @@ MCP servers are loaded the way the `agy` CLI loads them and added to the servers
 | Executable not found | Daemon PATH or `PASEO_AGY_ACP_BIN`. |
 | `Internal error` opening a session | Keep the companion executable beside the server; extract the full archive. |
 | `Authentication required` | Use the login action, or check API-key configuration. |
-| Login menu missing | Update the plugin, use a Paseo 0.8+ client, and open a workspace. |
 | Plugin rejected on Paseo 0.11 or earlier | Update to a plugin revision whose manifest requires `>=0.12.0 <1.0.0`; check the client and daemon versions. |
 | Plugin rejected on Paseo 1 or later | This plugin requires `<1.0.0`. |
 | No models after login | Reload the plugin; check `paseo provider diagnostic agy`. |
