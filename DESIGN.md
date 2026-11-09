@@ -14,6 +14,7 @@ flowchart TD
     AcpRuntime <--> AgyAcpServer["agy_acp_server.par (Google official ACP binary)"]
     Plugin -.->|PreInvocation Hook| AgyHooks["Antigravity hooks.json"]
     Plugin -.->|SessionStart Hook| AgyHooks
+    Plugin -.->|PreToolUse Hook| AgyHooks
 ```
 
 Paseo communicates with agent providers using the Paseo Provider Protocol (version 1). Rather than spawning the `agy` CLI in headless `stream-json` mode (which requires `--dangerously-skip-permissions`), this plugin drives Google's official Agent Client Protocol (ACP) binary (`agy_acp_server.par` / `agy_acp_server.exe`).
@@ -128,4 +129,30 @@ Because `agy_acp_server` is an external, Google-managed binary with its own life
   Sending `cwd: "/"` or omitting `cwd` during `catalog` discovery or `sessions` listing causes file inspection failures on certain platforms.
 - **Implementation** ([index.server.ts](index.server.ts)):
   Falls back to `homedir()` when `input.cwd` is empty or `"/"`.
+- **Status**: Implemented.
+
+---
+
+### 9. Background Task Kill Guard via PreToolUse Hook
+
+- **Root Cause**:
+  When an Antigravity agent invokes `manage_task` with `Action: "kill"` to terminate a background process (such as a dev server), `localharness` cancels the task context without emitting `STATE_FULLY_IDLE`, stalling the turn indefinitely. When the hung turn is subsequently interrupted or cancelled, `localharness` exits and closes its loopback WebSocket with code `1000 (OK)`.
+- **Implementation** ([server/task-guard.ts](server/task-guard.ts), [server/progress.ts](server/progress.ts), [index.server.ts](index.server.ts)):
+  1. The plugin registers a global `PreToolUse` command hook (`paseo-agy-task-guard`, matching `manage_task`) in `~/.gemini/config/hooks.json`.
+  2. In Paseo sessions (`PASEO_AGY_PROGRESS === "1"`), calls to `manage_task` with `Action: "kill"` return `permissionDecision: "deny"` and instruct the agent to terminate the process via `run_command` instead. Other actions (`list`, `status`, `send_input`) are allowed.
+  3. The `SessionStart` progress instruction also tells the agent upfront never to call `manage_task` with `Action: "kill"`.
+  4. The hook is removed on plugin teardown.
+- **Status**: Implemented.
+
+---
+
+### 10. Transparent ACP Session Recovery & Turn Replay on Connection Loss
+
+- **Root Cause**:
+  When `localharness` closes its loopback WebSocket, `agy_acp_server` catches `websockets.ConnectionClosed` on the next prompt and calls `AgyAdapter._rebuild_session_agent(session_id)`. The first step of `_rebuild_session_agent` closes the old session stack (`LocalConnection.disconnect()`), which attempts to run `ExternalOnSessionEndHook` over the already-closed WebSocket whenever `~/.gemini/config/hooks.json` is non-empty. `LocalConnection.disconnect()` raises `ConnectionClosedOK: received 1000 (OK); then sent 1000 (OK)` from its `finally` block before creating the replacement agent, causing `_rebuild_session_agent` to remove the session from `self._sessions`, stream `"Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)"` as a normal assistant message, and complete the turn with `stop_reason="end_turn"`. Subsequent prompts on that `AcpRuntime` fail with `Session not found` (`-32603 Internal error`), even though the SQLite trajectory (`<sessionId>.db`) on disk is intact.
+- **Implementation** ([server/recovery.ts](server/recovery.ts), [index.server.ts](index.server.ts)):
+  1. The plugin records each session's `session.open` snapshot, tracks `session.configure` and `session.config` updates (such as model switches), captures the native ACP `persistence` (`{ sessionId }`), and stores the in-flight `session.prompt` payload for the active turn.
+  2. When `isConnectionLostErrorMessage()` detects the rebuild failure text (or `isRecoverableTurnFailureMessage()` detects a `Session not found` / `Failed to rebuild agent` / `Internal error` turn failure), the plugin suppresses the fake assistant message and terminal `session.turn` event.
+  3. The plugin sends `session.close` followed by `session.open` (`history: "skip"`, passing `persistence` and the current `config`) so Paseo's ACP connection spawns a fresh `AcpRuntime` via `session/load`, and then replays the interrupted `session.prompt` within the same Paseo turn.
+  4. If the session cannot be reopened or fails again on replay, the turn is settled as `failed` with `error.code: "connection_lost"`.
 - **Status**: Implemented.

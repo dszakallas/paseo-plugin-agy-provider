@@ -23,6 +23,7 @@ export const PROGRESS_INSTRUCTION = [
   "Keep the user informed while you work. Before starting a meaningful step (a tool call or a short group of related calls), write one brief sentence saying what you are about to do.",
   "After a step produces a notable result or changes your plan, write one brief sentence about what you found or what changed.",
   "Keep each update under about 15 words, do not repeat an earlier update, and do not save all explanation for the final answer.",
+  "Never call manage_task with Action 'kill'; if you need to stop a background process you started, terminate it via run_command instead.",
 ].join(" ");
 
 const HOOK_SCRIPT = `#!/usr/bin/env node

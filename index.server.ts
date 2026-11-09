@@ -12,9 +12,18 @@ import {
   formatQuotaExceededMessage,
   isQuotaExceededErrorMessage,
 } from "./server/quota.ts";
+import {
+  type SessionOpenSnapshot,
+  applyConfigEventSnapshot,
+  applyConfigureChanges,
+  formatConnectionLostMessage,
+  isConnectionLostErrorMessage,
+  isRecoverableTurnFailureMessage,
+} from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
 import { installProgressHook, removeProgressHook } from "./server/progress.ts";
+import { installTaskGuardHook, removeTaskGuardHook } from "./server/task-guard.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = {
@@ -22,6 +31,21 @@ type ProviderInput = {
   sessionId?: string;
   config?: { cwd?: string; systemPrompt?: string; mcpServers?: Record<string, unknown> };
 };
+
+type RebuildState = {
+  sessionId: string;
+  phase: "closing" | "opening" | "replaying";
+  closeRequestId: string;
+  openRequestId: string;
+  clientMessageId?: string;
+  turnId?: string;
+  fallbackError: string;
+  onCloseSettled: () => void;
+  onOpenReady: () => void;
+  onOpenFailed: (message: string) => void;
+};
+
+let recoverySequence = 0;
 
 /** Concatenates the text parts of a prompt. */
 function promptText(prompt: { input?: { type?: string; content?: unknown } }): string {
@@ -71,8 +95,8 @@ export default function contribute(
     command: agyCommand(),
   });
 
-  // Steering needs a PreInvocation hook and progress narration a SessionStart
-  // hook in Antigravity's global config.
+  // Steering needs a PreInvocation hook, progress narration a SessionStart hook,
+  // and task-guard a PreToolUse hook in Antigravity's global config.
   try {
     const steerHook = installSteerHook();
     if (steerHook.changed) {
@@ -82,11 +106,15 @@ export default function contribute(
     if (progressHook.changed) {
       console.log(`[agy-provider] Installed progress hook in ${progressHook.path}`);
     }
+    const taskGuardHook = installTaskGuardHook();
+    if (taskGuardHook.changed) {
+      console.log(`[agy-provider] Installed task-guard hook in ${taskGuardHook.path}`);
+    }
   } catch (error) {
     console.warn(`[agy-provider] Could not install hooks: ${(error as Error).message}`);
   }
 
-  // Marks sessions launched here, so the progress hook speaks only for them.
+  // Marks sessions launched here, so the progress and task-guard hooks apply only to them.
   server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "agy" || request.env.PASEO_AGY_PROGRESS === "1") return;
     return { ...request, env: { ...request.env, PASEO_AGY_PROGRESS: "1" } };
@@ -98,31 +126,303 @@ export default function contribute(
       const listeners = new Set<(event: any) => void>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
+      const pendingConnectionErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
       const conversationIds = new Map<string, string>();
       const pendingSystemPrompts = new Map<string, string>();
       const prependedSystemPrompts = new Map<string, string>();
+      const sessionSnapshots = new Map<string, SessionOpenSnapshot>();
+      const lastPrompts = new Map<string, { input: any; retried: boolean }>();
+      const rebuildingSessions = new Map<string, RebuildState>();
+      const rebuildingByRequestId = new Map<string, RebuildState>();
+      const recoveryPromises = new Map<string, Promise<void>>();
 
       const emit = (event: any) => {
         for (const listener of listeners) listener(event);
       };
 
+      const startSessionRecovery = (
+        sessionId: string,
+        options: { replayPrompt?: any; turnId?: string; fallbackError: string },
+      ): Promise<void> => {
+        const snapshot = sessionSnapshots.get(sessionId);
+        if (!snapshot?.persistence || rebuildingSessions.has(sessionId)) {
+          if (options.replayPrompt && options.turnId) {
+            emit({
+              type: "session.turn",
+              sessionId,
+              turnId: options.turnId,
+              state: "failed",
+              error: {
+                message: options.fallbackError,
+                code: "connection_lost",
+              },
+            });
+          }
+          return Promise.resolve();
+        }
+
+        const seq = ++recoverySequence;
+        const closeRequestId = `agy-recover-close:${sessionId}:${seq}`;
+        const openRequestId = `agy-recover-open:${sessionId}:${seq}`;
+        let resolveClose!: () => void;
+        let resolveOpen!: () => void;
+        let rejectOpen!: (error: Error) => void;
+
+        const closePromise = new Promise<void>((resolve) => {
+          resolveClose = resolve;
+        });
+        const openPromise = new Promise<void>((resolve, reject) => {
+          resolveOpen = resolve;
+          rejectOpen = reject;
+        });
+
+        const state: RebuildState = {
+          sessionId,
+          phase: "closing",
+          closeRequestId,
+          openRequestId,
+          clientMessageId: options.replayPrompt?.prompt?.clientMessageId,
+          turnId: options.turnId,
+          fallbackError: options.fallbackError,
+          onCloseSettled: () => resolveClose(),
+          onOpenReady: () => resolveOpen(),
+          onOpenFailed: (message) => rejectOpen(new Error(message)),
+        };
+
+        rebuildingSessions.set(sessionId, state);
+        rebuildingByRequestId.set(closeRequestId, state);
+        rebuildingByRequestId.set(openRequestId, state);
+
+        const cleanupRequestIds = () => {
+          rebuildingByRequestId.delete(closeRequestId);
+          rebuildingByRequestId.delete(openRequestId);
+        };
+
+        const run = (async () => {
+          try {
+            await connection.send({
+              type: "session.close",
+              requestId: closeRequestId,
+              sessionId,
+            });
+            await closePromise;
+
+            state.phase = "opening";
+            const currentSnapshot = sessionSnapshots.get(sessionId) ?? snapshot;
+            await connection.send({
+              ...currentSnapshot.openInput,
+              type: "session.open",
+              requestId: openRequestId,
+              sessionId,
+              persistence: currentSnapshot.persistence,
+              history: "skip",
+            } as any);
+            await openPromise;
+            cleanupRequestIds();
+
+            // Yield one macrotask so `openSession` in `@getpaseo/plugin` finishes
+            // registering `state.sessions.set(sessionId, ...)` after `session.ready`.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            if (options.replayPrompt && options.turnId) {
+              state.phase = "replaying";
+              activeTurns.set(sessionId, options.turnId);
+              await connection.send(options.replayPrompt);
+            } else {
+              rebuildingSessions.delete(sessionId);
+            }
+          } catch (error) {
+            cleanupRequestIds();
+            rebuildingSessions.delete(sessionId);
+            activeTurns.delete(sessionId);
+            console.warn(
+              `[agy-provider] Failed to recover session ${sessionId}: ${(error as Error).message}`,
+            );
+            if (options.replayPrompt && options.turnId) {
+              emit({
+                type: "session.turn",
+                sessionId,
+                turnId: options.turnId,
+                state: "failed",
+                error: {
+                  message: options.fallbackError,
+                  code: "connection_lost",
+                },
+              });
+            }
+          } finally {
+            recoveryPromises.delete(sessionId);
+          }
+        })();
+
+        recoveryPromises.set(sessionId, run);
+        return run;
+      };
+
       connection.onEvent((event: any) => {
+        if (typeof event.requestId === "string") {
+          const rebuildByReq = rebuildingByRequestId.get(event.requestId);
+          if (rebuildByReq) {
+            if (event.requestId === rebuildByReq.closeRequestId) {
+              if (event.type === "request.completed" || event.type === "request.failed") {
+                rebuildByReq.onCloseSettled();
+                return;
+              }
+            } else if (event.requestId === rebuildByReq.openRequestId) {
+              if (event.type === "session.opened") {
+                const nativeSessionId = event.persistence?.data?.sessionId;
+                if (typeof nativeSessionId === "string" && nativeSessionId !== "") {
+                  conversationIds.set(event.sessionId, nativeSessionId);
+                }
+                const snap = sessionSnapshots.get(event.sessionId);
+                if (snap && event.persistence) {
+                  sessionSnapshots.set(event.sessionId, {
+                    ...snap,
+                    persistence: event.persistence,
+                  });
+                }
+                return;
+              }
+              if (event.type === "session.ready") {
+                rebuildByReq.onOpenReady();
+                return;
+              }
+              if (event.type === "request.failed") {
+                rebuildByReq.onOpenFailed(
+                  event.error?.message ?? "Failed to reopen ACP session",
+                );
+                return;
+              }
+            }
+          }
+        }
+
+        if (typeof event.sessionId === "string") {
+          const rebuild = rebuildingSessions.get(event.sessionId);
+          if (rebuild) {
+            if (rebuild.phase === "closing" || rebuild.phase === "opening") {
+              if (event.type === "session.runtime_failed" && rebuild.phase === "opening") {
+                rebuild.onOpenFailed(
+                  event.error?.message ?? "ACP runtime failed while reopening session",
+                );
+              }
+              return;
+            }
+            if (rebuild.phase === "replaying") {
+              if (
+                event.type === "timeline.item" &&
+                event.item?.type === "user_message" &&
+                (!rebuild.clientMessageId || event.item.id === rebuild.clientMessageId)
+              ) {
+                return;
+              }
+              if (
+                event.type === "session.prompt_result" &&
+                (!rebuild.clientMessageId || event.clientMessageId === rebuild.clientMessageId)
+              ) {
+                if (event.result?.type === "failed") {
+                  rebuildingSessions.delete(event.sessionId);
+                  activeTurns.delete(event.sessionId);
+                  if (rebuild.turnId) {
+                    emit({
+                      type: "session.turn",
+                      sessionId: event.sessionId,
+                      turnId: rebuild.turnId,
+                      state: "failed",
+                      error: {
+                        message: event.result.error?.message ?? rebuild.fallbackError,
+                        code: "connection_lost",
+                      },
+                    });
+                  }
+                }
+                return;
+              }
+              if (event.type === "session.turn" && event.state === "started") {
+                activeTurns.set(event.sessionId, event.turnId);
+                rebuildingSessions.delete(event.sessionId);
+                return;
+              }
+            }
+          }
+        }
+
         if (event.type === "session.opened") {
           const nativeSessionId = event.persistence?.data?.sessionId;
           if (typeof nativeSessionId === "string" && nativeSessionId !== "") {
             conversationIds.set(event.sessionId, nativeSessionId);
           }
+          const snap = sessionSnapshots.get(event.sessionId);
+          if (snap && event.persistence) {
+            sessionSnapshots.set(event.sessionId, {
+              ...snap,
+              persistence: event.persistence,
+            });
+          }
           if (Array.isArray(event.capabilities) && !event.capabilities.includes("prompt.steer")) {
             event = { ...event, capabilities: [...event.capabilities, "prompt.steer"] };
+          }
+        } else if (event.type === "session.config") {
+          const snap = sessionSnapshots.get(event.sessionId);
+          if (snap && event.config) {
+            sessionSnapshots.set(
+              event.sessionId,
+              applyConfigEventSnapshot(snap, event.config),
+            );
           }
         } else if (event.type === "session.turn") {
           if (event.state === "started") {
             activeTurns.set(event.sessionId, event.turnId);
             pendingQuotaErrors.delete(event.sessionId);
             pendingMcpErrors.delete(event.sessionId);
+            pendingConnectionErrors.delete(event.sessionId);
           } else {
             activeTurns.delete(event.sessionId);
+            const pendingConnection = pendingConnectionErrors.get(event.sessionId);
+            pendingConnectionErrors.delete(event.sessionId);
+
+            const isRecoverableFailure =
+              Boolean(pendingConnection) ||
+              (event.state === "failed" &&
+                isRecoverableTurnFailureMessage(event.error?.message));
+
+            if (isRecoverableFailure) {
+              const lastPrompt = lastPrompts.get(event.sessionId);
+              const snapshot = sessionSnapshots.get(event.sessionId);
+              const fallbackError =
+                pendingConnection ??
+                event.error?.message ??
+                "Agent connection was lost and could not be re-established.";
+
+              if (lastPrompt && !lastPrompt.retried && snapshot?.persistence) {
+                lastPrompt.retried = true;
+                console.warn(
+                  `[agy-provider] Recovering dead ACP session ${event.sessionId} and replaying turn (${fallbackError})`,
+                );
+                void startSessionRecovery(event.sessionId, {
+                  replayPrompt: lastPrompt.input,
+                  turnId: event.turnId,
+                  fallbackError,
+                });
+                return;
+              }
+
+              emit({
+                ...event,
+                state: "failed",
+                error: {
+                  message: fallbackError,
+                  code: "connection_lost",
+                  ...(event.error?.diagnostic ? { diagnostic: event.error.diagnostic } : {}),
+                },
+              });
+              if (snapshot?.persistence) {
+                void startSessionRecovery(event.sessionId, { fallbackError });
+              }
+              return;
+            }
+
             if (event.state === "completed" || event.state === "canceled") {
               const pendingQuota = pendingQuotaErrors.get(event.sessionId);
               if (pendingQuota) {
@@ -182,10 +482,13 @@ export default function contribute(
         } else if (event.type === "session.closed") {
           pendingQuotaErrors.delete(event.sessionId);
           pendingMcpErrors.delete(event.sessionId);
+          pendingConnectionErrors.delete(event.sessionId);
           activeTurns.delete(event.sessionId);
           conversationIds.delete(event.sessionId);
           pendingSystemPrompts.delete(event.sessionId);
           prependedSystemPrompts.delete(event.sessionId);
+          sessionSnapshots.delete(event.sessionId);
+          lastPrompts.delete(event.sessionId);
         } else if (event.type === "timeline.item") {
           if (event.item?.type === "tool_call") {
             event = {
@@ -220,6 +523,12 @@ export default function contribute(
             event.item?.type === "assistant_message" ||
             event.item?.type === "reasoning"
           ) {
+            if (isConnectionLostErrorMessage(event.item?.text)) {
+              const cleanMessage = formatConnectionLostMessage(event.item.text);
+              console.warn(`[agy-provider] Connection lost: ${cleanMessage}`);
+              pendingConnectionErrors.set(event.sessionId, cleanMessage);
+              return;
+            }
             if (isQuotaExceededErrorMessage(event.item?.text)) {
               const cleanMessage = formatQuotaExceededMessage(event.item.text);
               console.warn(`[agy-provider] Quota exceeded: ${cleanMessage}`);
@@ -251,10 +560,25 @@ export default function contribute(
         ...connection,
         capabilities,
         async send(input: any) {
+          if (typeof input?.sessionId === "string") {
+            const activeRecovery = recoveryPromises.get(input.sessionId);
+            if (activeRecovery) {
+              await activeRecovery;
+            }
+          }
           if (input?.type === "session.open") {
             const systemPrompt = input.config?.systemPrompt;
             if (typeof systemPrompt === "string" && systemPrompt.trim().length > 0) {
               pendingSystemPrompts.set(input.sessionId, systemPrompt.trim());
+            }
+          }
+          if (input?.type === "session.configure" && typeof input.sessionId === "string") {
+            const snap = sessionSnapshots.get(input.sessionId);
+            if (snap) {
+              sessionSnapshots.set(
+                input.sessionId,
+                applyConfigureChanges(snap, input.changes),
+              );
             }
           }
           if (input?.type === "session.prompt" && input.prompt?.delivery === "steer") {
@@ -327,11 +651,21 @@ export default function contribute(
                 }
               }
             }
+            if (typeof input.sessionId === "string") {
+              lastPrompts.set(input.sessionId, { input, retried: false });
+            }
           }
           if ((input?.type === "catalog" || input?.type === "sessions") && (!input.cwd || input.cwd === "/")) {
             input = { ...input, cwd: homedir() };
           }
-          return connection.send(await withMcpServers(input));
+          const resolvedInput = await withMcpServers(input);
+          if (resolvedInput?.type === "session.open" && typeof resolvedInput.sessionId === "string") {
+            sessionSnapshots.set(resolvedInput.sessionId, {
+              openInput: resolvedInput as Record<string, any>,
+              persistence: (resolvedInput as any).persistence,
+            });
+          }
+          return connection.send(resolvedInput);
         },
         onEvent(listener: any) {
           listeners.add(listener);
@@ -348,11 +682,11 @@ export default function contribute(
   });
 
   return () => {
-    // Leaving the hook installed would spawn a process on every model call for
-    // a plugin that no longer queues anything.
+    // Leaving the hooks installed would spawn processes for a plugin that is no longer active.
     try {
       removeSteerHook();
       removeProgressHook();
+      removeTaskGuardHook();
     } catch {
       // Best effort.
     }
