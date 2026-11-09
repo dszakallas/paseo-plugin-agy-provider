@@ -57,7 +57,7 @@ export function progressHookScriptPath(): string {
 }
 
 export function progressHookCommand(): string {
-  return `${JSON.stringify(process.execPath)} ${JSON.stringify(progressHookScriptPath())}`;
+  return `env ELECTRON_RUN_AS_NODE=1 ${JSON.stringify(process.execPath)} ${JSON.stringify(progressHookScriptPath())}`;
 }
 
 export type HookInstallResult = { path: string; changed: boolean };

@@ -11,23 +11,22 @@ Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/doc
 
 ## Installation
 
-### 1. Install the official server
+### 1. Install the Antigravity CLI
 
-On the **Paseo daemon host**, download your platform's archive from the [official ACP Registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json). Extract the entire archive, keeping the companion `localharness_external` executable beside the server. The ordinary `agy` CLI does not replace this server. The plugin has no macOS-only restriction; it selects the command for the daemon host on macOS, Linux, or Windows.
+On the **Paseo daemon host**, install the official `agy` CLI (version 1.5.0 or later, which includes the built-in `agy acp` subcommand). The plugin selects the command for the daemon host on macOS, Linux, or Windows:
 
 | Platform | Executable | Plugin-supplied arguments |
 | --- | --- | --- |
-| macOS ARM64 | `agy_acp_server.par` | None |
-| Linux x64 / ARM64 | `agy_acp_server.par` | `--uid=` |
-| Windows x64 / ARM64 | `agy_acp_server.exe` | None |
+| macOS / Linux | `agy` | `acp` |
+| Windows | `agy.exe` | `acp` |
 
-Add the extraction directory to the daemon's PATH, or set `PASEO_AGY_ACP_BIN` to the executable's absolute path. For example:
+Ensure `agy` is on the daemon's PATH, or set `PASEO_AGY_ACP_BIN` to the `agy` executable's absolute path. For example:
 
 ```sh
-export PASEO_AGY_ACP_BIN="$HOME/.local/share/antigravity-acp/agy_acp_server.par"
+export PASEO_AGY_ACP_BIN="/opt/homebrew/bin/agy"
 ```
 
-Set this in the environment that starts the daemon; exporting it in another terminal does not change a running daemon. Restart the daemon after changing its environment. The login terminal also needs **Node.js 22.18+** and the same server configuration.
+Set this in the environment that starts the daemon; exporting it in another terminal does not change a running daemon. Restart the daemon after changing its environment. The login terminal also needs **Node.js 22.18+** and the same CLI configuration.
 
 ### 2. Install the plugin
 
@@ -39,18 +38,15 @@ For an existing installation, run `paseo plugin update agy-provider`.
 
 ### 3. Log in
 
-1. Open a workspace in Paseo.
-2. Open the **Command Center** (`Cmd+K` on macOS) and choose **Antigravity: Log in with Google**.
-3. Complete Google's browser sign-in. The **Antigravity login** workspace terminal shows progress and the result; use its sign-in link if the browser does not open.
-4. If the model list still shows an earlier authentication error, reload `agy-provider` in Settings → Plugins.
+1. Run `agy login` or `agy acp --login` in a terminal, or open a workspace in Paseo and choose **Antigravity: Log in with Google** from the **Command Center** (`Cmd+K` on macOS).
+2. Complete Google's browser sign-in.
+3. If the model list still shows an earlier authentication error, reload `agy-provider` in Settings → Plugins.
 
-**No separate clone or npm install is needed.** The action uses the helper already included in the installed plugin.
-
-The official server owns authentication and credential storage. Existing ACP authentication can be reused; ordinary `agy` CLI login alone is insufficient. If you override `GEMINI_HOME`, use the same value for the daemon and login terminal.
+**No separate clone or npm install is needed.** Existing `agy` CLI authentication is shared automatically with `agy acp`. If you override `GEMINI_HOME`, use the same value for the daemon and login terminal.
 
 ### Gemini API key instead of Google sign-in
 
-Set `GEMINI_API_KEY` securely in the daemon's launch environment. Merge this into `~/.gemini/antigravity-acp/settings.json`, preserving other settings:
+Set `GEMINI_API_KEY` securely in the daemon's launch environment. Merge this into `~/.gemini/antigravity-cli/settings.json`, preserving other settings:
 
 ```json
 {

@@ -1,6 +1,6 @@
 # Design
 
-This document records the architectural design implemented in `paseo-plugin-agy-provider` to integrate Google's official Antigravity ACP server (`agy_acp_server`) into Paseo.
+This document records the architectural design implemented in `paseo-plugin-agy-provider` to integrate Google's official Antigravity ACP server (`agy acp`) into Paseo.
 
 ---
 
@@ -11,15 +11,15 @@ flowchart TD
     PaseoClient["Paseo Client / UI"] <--> PaseoDaemon["Paseo Daemon"]
     PaseoDaemon <--> Plugin["paseo-plugin-agy-provider (index.server.ts)"]
     Plugin <--> AcpRuntime["@getpaseo/plugin ACP Runtime"]
-    AcpRuntime <--> AgyAcpServer["agy_acp_server.par (Google official ACP binary)"]
+    AcpRuntime <--> AgyAcpServer["agy acp (Google official ACP server)"]
     Plugin -.->|PreInvocation Hook| AgyHooks["Antigravity hooks.json"]
     Plugin -.->|SessionStart Hook| AgyHooks
     Plugin -.->|PreToolUse Hook| AgyHooks
 ```
 
-Paseo communicates with agent providers using the Paseo Provider Protocol (version 1). Rather than spawning the `agy` CLI in headless `stream-json` mode (which requires `--dangerously-skip-permissions`), this plugin drives Google's official Agent Client Protocol (ACP) binary (`agy_acp_server.par` / `agy_acp_server.exe`).
+Paseo communicates with agent providers using the Paseo Provider Protocol (version 1). Rather than spawning the `agy` CLI in headless `stream-json` mode (which requires `--dangerously-skip-permissions`), this plugin drives Google's official Agent Client Protocol (ACP) server via `agy acp`.
 
-Because `agy_acp_server` is an external, Google-managed binary with its own lifecycle and protocol quirks, several workarounds bridge the differences between Paseo's expectations and Antigravity's behavior.
+Because the Antigravity ACP server is an external, Google-managed binary with its own lifecycle and protocol quirks, several workarounds bridge the differences between Paseo's expectations and Antigravity's behavior.
 
 ---
 

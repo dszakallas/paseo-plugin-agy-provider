@@ -79,7 +79,7 @@ export function taskGuardHookScriptPath(): string {
 }
 
 export function taskGuardHookCommand(): string {
-  return `${JSON.stringify(process.execPath)} ${JSON.stringify(taskGuardHookScriptPath())}`;
+  return `env ELECTRON_RUN_AS_NODE=1 ${JSON.stringify(process.execPath)} ${JSON.stringify(taskGuardHookScriptPath())}`;
 }
 
 export type HookInstallResult = { path: string; changed: boolean };
