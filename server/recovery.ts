@@ -1,36 +1,15 @@
 import { stripAnsi } from "./mcp.ts";
 
 /**
- * Detects the assistant message emitted by `AgyAdapter._send_connection_lost_message`
- * when `localharness` closes its WebSocket and `_rebuild_session_agent` fails.
- */
-const CONNECTION_LOST_PATTERNS: RegExp[] = [
-  /Agent connection was lost and could not be re-established/i,
-  /Failed to rebuild agent:\s*received 1000 \(OK\)/i,
-];
-
-/**
- * Detects JSON-RPC turn failures caused by `AgyAdapter` dropping the session
- * from `self._sessions` after a failed rebuild (`ValueError("Session not found")`
- * or unhandled `RuntimeError("Failed to rebuild agent")` before the prompt loop).
+ * Detects turn failures caused by an ACP session disconnect or missing worker session
+ * (e.g. `Session not found`, `Internal error`, transport closed) that can be recovered
+ * by reloading the session from its trajectory persistence.
  */
 const RECOVERABLE_TURN_FAILURE_PATTERNS: RegExp[] = [
   /Session not found/i,
-  /Failed to rebuild agent/i,
   /^Internal error$/i,
+  /transport closed/i,
 ];
-
-export function isConnectionLostErrorMessage(text: unknown): text is string {
-  if (typeof text !== "string" || text.trim().length === 0) {
-    return false;
-  }
-  const clean = stripAnsi(text).trim();
-  return CONNECTION_LOST_PATTERNS.some((re) => re.test(clean));
-}
-
-export function formatConnectionLostMessage(text: string): string {
-  return stripAnsi(text).trim();
-}
 
 export function isRecoverableTurnFailureMessage(text: unknown): text is string {
   if (typeof text !== "string" || text.trim().length === 0) {

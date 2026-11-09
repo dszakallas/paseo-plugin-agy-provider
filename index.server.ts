@@ -16,8 +16,6 @@ import {
   type SessionOpenSnapshot,
   applyConfigEventSnapshot,
   applyConfigureChanges,
-  formatConnectionLostMessage,
-  isConnectionLostErrorMessage,
   isRecoverableTurnFailureMessage,
 } from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
@@ -31,7 +29,6 @@ import {
 } from "./server/modes.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
 import { installProgressHook, removeProgressHook } from "./server/progress.ts";
-import { installTaskGuardHook, removeTaskGuardHook } from "./server/task-guard.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = {
@@ -103,8 +100,8 @@ export default function contribute(
     command: agyCommand(),
   });
 
-  // Steering needs a PreInvocation hook, progress narration a SessionStart hook,
-  // and task-guard a PreToolUse hook in Antigravity's global config.
+  // Steering needs a PreInvocation hook and progress narration a SessionStart hook
+  // in Antigravity's global config.
   try {
     const steerHook = installSteerHook();
     if (steerHook.changed) {
@@ -114,15 +111,11 @@ export default function contribute(
     if (progressHook.changed) {
       console.log(`[agy-provider] Installed progress hook in ${progressHook.path}`);
     }
-    const taskGuardHook = installTaskGuardHook();
-    if (taskGuardHook.changed) {
-      console.log(`[agy-provider] Installed task-guard hook in ${taskGuardHook.path}`);
-    }
   } catch (error) {
     console.warn(`[agy-provider] Could not install hooks: ${(error as Error).message}`);
   }
 
-  // Marks sessions launched here, so the progress and task-guard hooks apply only to them.
+  // Marks sessions launched here, so the progress hook applies only to them.
   server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "agy" || request.env.PASEO_AGY_PROGRESS === "1") return;
     return { ...request, env: { ...request.env, PASEO_AGY_PROGRESS: "1" } };
@@ -135,7 +128,6 @@ export default function contribute(
       const sessionModes = new Map<string, string>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
-      const pendingConnectionErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
       const conversationIds = new Map<string, string>();
       const pendingSystemPrompts = new Map<string, string>();
@@ -424,29 +416,24 @@ export default function contribute(
             activeTurns.set(event.sessionId, event.turnId);
             pendingQuotaErrors.delete(event.sessionId);
             pendingMcpErrors.delete(event.sessionId);
-            pendingConnectionErrors.delete(event.sessionId);
           } else {
             activeTurns.delete(event.sessionId);
-            const pendingConnection = pendingConnectionErrors.get(event.sessionId);
-            pendingConnectionErrors.delete(event.sessionId);
 
             const isRecoverableFailure =
-              Boolean(pendingConnection) ||
-              (event.state === "failed" &&
-                isRecoverableTurnFailureMessage(event.error?.message));
+              event.state === "failed" &&
+              isRecoverableTurnFailureMessage(event.error?.message);
 
             if (isRecoverableFailure) {
               const lastPrompt = lastPrompts.get(event.sessionId);
               const snapshot = sessionSnapshots.get(event.sessionId);
               const fallbackError =
-                pendingConnection ??
                 event.error?.message ??
-                "Agent connection was lost and could not be re-established.";
+                "Agent session was lost and could not be recovered.";
 
               if (lastPrompt && !lastPrompt.retried && snapshot?.persistence) {
                 lastPrompt.retried = true;
                 console.warn(
-                  `[agy-provider] Recovering dead ACP session ${event.sessionId} and replaying turn (${fallbackError})`,
+                  `[agy-provider] Recovering failed ACP session ${event.sessionId} and replaying turn (${fallbackError})`,
                 );
                 void startSessionRecovery(event.sessionId, {
                   replayPrompt: lastPrompt.input,
@@ -531,7 +518,6 @@ export default function contribute(
           sessionModes.delete(event.sessionId);
           pendingQuotaErrors.delete(event.sessionId);
           pendingMcpErrors.delete(event.sessionId);
-          pendingConnectionErrors.delete(event.sessionId);
           activeTurns.delete(event.sessionId);
           conversationIds.delete(event.sessionId);
           pendingSystemPrompts.delete(event.sessionId);
@@ -572,12 +558,6 @@ export default function contribute(
             event.item?.type === "assistant_message" ||
             event.item?.type === "reasoning"
           ) {
-            if (isConnectionLostErrorMessage(event.item?.text)) {
-              const cleanMessage = formatConnectionLostMessage(event.item.text);
-              console.warn(`[agy-provider] Connection lost: ${cleanMessage}`);
-              pendingConnectionErrors.set(event.sessionId, cleanMessage);
-              return;
-            }
             if (isQuotaExceededErrorMessage(event.item?.text)) {
               const cleanMessage = formatQuotaExceededMessage(event.item.text);
               console.warn(`[agy-provider] Quota exceeded: ${cleanMessage}`);
@@ -781,7 +761,6 @@ export default function contribute(
     try {
       removeSteerHook();
       removeProgressHook();
-      removeTaskGuardHook();
     } catch {
       // Best effort.
     }

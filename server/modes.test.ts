@@ -568,21 +568,15 @@ test("session recovery preserves dangerously-skip-permissions mode and sends acc
         promptAttempt++;
         const turnId = `turn-${promptAttempt}`;
         if (promptAttempt === 1) {
-          // Connection lost error triggering recovery
-          eventCallback!({
-            type: "timeline.item",
-            sessionId: input.sessionId,
-            item: {
-              type: "assistant_message",
-              id: "msg-1",
-              text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
-            },
-          });
+          // Failure triggering recovery
           eventCallback!({
             type: "session.turn",
             sessionId: input.sessionId,
             turnId,
-            state: "completed",
+            state: "failed",
+            error: {
+              message: "Session not found: native-recover-1",
+            },
           });
         } else {
           // Replayed attempt triggers a permission request
