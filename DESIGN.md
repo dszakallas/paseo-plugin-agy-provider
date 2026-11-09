@@ -13,7 +13,6 @@ flowchart TD
     Plugin <--> AcpRuntime["@getpaseo/plugin ACP Runtime"]
     AcpRuntime <--> AgyAcpServer["agy acp (Google official ACP server)"]
     Plugin -.->|PreInvocation Hook| AgyHooks["Antigravity hooks.json"]
-    Plugin -.->|SessionStart Hook| AgyHooks
 ```
 
 Paseo communicates with agent providers using the Paseo Provider Protocol (version 1). Rather than spawning the `agy` CLI in headless `stream-json` mode (which requires `--dangerously-skip-permissions`), this plugin drives Google's official Agent Client Protocol (ACP) server via `agy acp`.
@@ -62,20 +61,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 3. Progress Narration via SessionStart Hook
-
-- **Root Cause**:
-  Paseo provides a progress view to follow long-running agent workflows, but Antigravity sessions do not output structured step narration by default.
-- **Implementation** ([server/progress.ts](server/progress.ts), [index.server.ts](index.server.ts)):
-  1. The plugin registers a global `SessionStart` hook in `~/.gemini/config/hooks.json`.
-  2. To avoid affecting non-Paseo Antigravity CLI sessions, `server.before("agent.session_open")` injects `PASEO_AGY_PROGRESS: "1"` into the session environment.
-  3. When `PASEO_AGY_PROGRESS === "1"`, the hook injects narration guidelines instructing the agent to report milestone progress.
-  4. The hook is removed on plugin teardown.
-- **Status**: Implemented.
-
----
-
-### 4. Multi-Source MCP Discovery and Viability Preflight
+### 3. Multi-Source MCP Discovery and Viability Preflight
 
 - **Root Cause**:
   Antigravity users configure MCP servers in several locations:
@@ -91,7 +77,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 5. API Quota Exhaustion Interception
+### 4. API Quota Exhaustion Interception
 
 - **Root Cause**:
   When Gemini API rate limits or quota limits are exceeded, Antigravity outputs the error as standard assistant text or thought blocks (e.g. `"You have reached your current quota for this period..."`) and completes the turn normally. Paseo would mark the turn as successful, confusing users.
@@ -103,7 +89,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 6. MCP Initialization Error Suppression & Turn Failure
+### 5. MCP Initialization Error Suppression & Turn Failure
 
 - **Root Cause**:
   If an MCP server fails to initialize at runtime, `agy_acp_server` streams verbose ANSI-colored errors into the assistant transcript before completing or failing.
@@ -115,7 +101,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 7. Tool Call Timeline Detail Enrichment
+### 6. Tool Call Timeline Detail Enrichment
 
 - **Root Cause**:
   ACP tool calls arrive with generic details (`type: "unknown"`), missing the semantic categorization Paseo uses to render dedicated UI blocks (shell terminals, diff viewers, subagent cards, web search results).
@@ -132,7 +118,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 8. Fallback CWD for Root and Missing Directories
+### 7. Fallback CWD for Root and Missing Directories
 
 - **Root Cause**:
   Sending `cwd: "/"` or omitting `cwd` during `catalog` discovery or `sessions` listing causes file inspection failures on certain platforms.
@@ -142,7 +128,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 9. Transparent ACP Session Recovery on Session Disconnect
+### 8. Transparent ACP Session Recovery on Session Disconnect
 
 - **Root Cause**:
   If an ACP worker process disconnects or fails during a turn (`Session not found`, `Internal error`, or unexpected transport closure), subsequent requests to that worker fail even though the underlying SQLite trajectory (`<sessionId>.db`) on disk is intact.
@@ -155,7 +141,7 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 
 ---
 
-### 10. Dangerously Skip Permissions Mode
+### 9. Dangerously Skip Permissions Mode
 
 - **Root Cause**:
   While the legacy standalone `agy_acp_server.par` advertised a native `yolo` mode ("Auto-approve all tools"), the built-in `agy acp` server in the official `agy` CLI only advertises `default`, `accept-edits`, and `plan`. Attempting to set `mode: "yolo"` or `mode: "dangerously-skip-permissions"` directly via ACP `session/set_mode` results in JSON-RPC error `-32602: Unknown mode`. However, `agy acp` accepts a `--dangerously-skip-permissions` CLI flag, and Paseo users need an interactive mode option in the mode selector to skip tool permission prompts during unattended or trusted workflows.

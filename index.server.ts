@@ -28,7 +28,6 @@ import {
   isDangerouslySkipPermissionsMode,
 } from "./server/modes.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
-import { installProgressHook, removeProgressHook } from "./server/progress.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = {
@@ -100,26 +99,16 @@ export default function contribute(
     command: agyCommand(),
   });
 
-  // Steering needs a PreInvocation hook and progress narration a SessionStart hook
-  // in Antigravity's global config.
+  // Steering needs a PreInvocation hook in Antigravity's global config.
   try {
     const steerHook = installSteerHook();
     if (steerHook.changed) {
       console.log(`[agy-provider] Installed steering hook in ${steerHook.path}`);
     }
-    const progressHook = installProgressHook();
-    if (progressHook.changed) {
-      console.log(`[agy-provider] Installed progress hook in ${progressHook.path}`);
-    }
   } catch (error) {
     console.warn(`[agy-provider] Could not install hooks: ${(error as Error).message}`);
   }
 
-  // Marks sessions launched here, so the progress hook applies only to them.
-  server.before("agent.session_open", ({ request }) => {
-    if (request.provider !== "agy" || request.env.PASEO_AGY_PROGRESS === "1") return;
-    return { ...request, env: { ...request.env, PASEO_AGY_PROGRESS: "1" } };
-  });
   server.registerProvider({
     ...provider,
     async connect(request) {
@@ -760,7 +749,6 @@ export default function contribute(
     // Leaving the hooks installed would spawn processes for a plugin that is no longer active.
     try {
       removeSteerHook();
-      removeProgressHook();
     } catch {
       // Best effort.
     }

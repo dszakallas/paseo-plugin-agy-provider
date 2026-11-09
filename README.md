@@ -6,7 +6,7 @@ Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/doc
 > **Paseo 0.11 and later include native Antigravity support.** This repo is a maintained fork of
 > [3ae3ae/paseo-plugin-agy-provider](https://github.com/3ae3ae/paseo-plugin-agy-provider), and aims to
 > provide an alternative that directly drives the official ACP binary with active-turn steering,
-> progress narration, multi-source MCP discovery, and system prompt
+> multi-source MCP discovery, and system prompt
 > injection. See [DESIGN.md](DESIGN.md) for architecture details.
 
 ## Installation
