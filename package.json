@@ -1,7 +1,7 @@
 {
   "name": "paseo-plugin-agy-provider",
-  "version": "0.3.0",
-  "description": "Paseo 0.8-0.12 provider plugin for Google's official Antigravity ACP server",
+  "version": "0.4.0",
+  "description": "Paseo 0.12+ provider plugin for Google's official Antigravity ACP server",
   "type": "module",
   "private": true,
   "author": "3ae3ae",
@@ -10,7 +10,7 @@
   "bugs": "https://github.com/3ae3ae/paseo-plugin-agy-provider/issues",
   "scripts": {
     "login": "node scripts/login.ts",
-    "test": "node --test server/command.test.ts server/mcp.test.ts server/quota.test.ts server/tools.test.ts server/steer.test.ts server/progress.test.ts",
+    "test": "node --test server/command.test.ts server/mcp.test.ts server/quota.test.ts server/tools.test.ts server/steer.test.ts server/progress.test.ts server/task-guard.test.ts server/recovery.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
