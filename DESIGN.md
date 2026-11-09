@@ -156,3 +156,17 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
   3. The plugin sends `session.close` followed by `session.open` (`history: "skip"`, passing `persistence` and the current `config`) so Paseo's ACP connection spawns a fresh `AcpRuntime` via `session/load`, and then replays the interrupted `session.prompt` within the same Paseo turn.
   4. If the session cannot be reopened or fails again on replay, the turn is settled as `failed` with `error.code: "connection_lost"`.
 - **Status**: Implemented.
+
+---
+
+### 11. Dangerously Skip Permissions Mode
+
+- **Root Cause**:
+  While the legacy standalone `agy_acp_server.par` advertised a native `yolo` mode ("Auto-approve all tools"), the built-in `agy acp` server in the official `agy` CLI only advertises `default`, `accept-edits`, and `plan`. Attempting to set `mode: "yolo"` or `mode: "dangerously-skip-permissions"` directly via ACP `session/set_mode` results in JSON-RPC error `-32602: Unknown mode`. However, `agy acp` accepts a `--dangerously-skip-permissions` CLI flag, and Paseo users need an interactive mode option in the mode selector to skip tool permission prompts during unattended or trusted workflows.
+- **Implementation** ([server/modes.ts](server/modes.ts), [index.server.ts](index.server.ts)):
+  1. The plugin defines `DANGEROUSLY_SKIP_PERMISSIONS_MODE` (`id: "dangerously-skip-permissions"`, `label: "Dangerously skip permissions"`, `icon: "ShieldOff"`, `colorTier: "dangerous"`, `isUnattended: true`) and advertises it in `catalog.modes` and `session.config.modes`. The legacy `yolo` mode ID is also recognized as an alias.
+  2. When a session is opened or configured in this mode, the plugin records the session's active mode in `sessionModes` and translates the mode sent to the underlying `agy acp` server to `accept-edits` (so native file edits require no prompts).
+  3. When `session.permission` events arrive from `agy acp` (for commands, terminal executions, etc.) for a session in this mode, the plugin intercepts the event, suppresses it from reaching the Paseo UI, and immediately replies with `behavior: "allow"`. The corresponding `session.permission_resolved` event is also suppressed.
+  4. The mode is preserved across transparent session recoveries.
+  5. Setting `PASEO_AGY_DANGEROUSLY_SKIP_PERMISSIONS="1"` in the daemon environment passes `--dangerously-skip-permissions` directly to `agy acp` for server-wide auto-approval.
+- **Status**: Implemented.

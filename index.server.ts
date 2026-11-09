@@ -21,6 +21,14 @@ import {
   isRecoverableTurnFailureMessage,
 } from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
+import {
+  DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
+  NATIVE_AUTO_APPROVE_BASE_MODE,
+  enrichCatalogModes,
+  enrichConfigModes,
+  findAllowPermissionAction,
+  isDangerouslySkipPermissionsMode,
+} from "./server/modes.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
 import { installProgressHook, removeProgressHook } from "./server/progress.ts";
 import { installTaskGuardHook, removeTaskGuardHook } from "./server/task-guard.ts";
@@ -124,6 +132,7 @@ export default function contribute(
     async connect(request) {
       const connection = await provider.connect(request);
       const listeners = new Set<(event: any) => void>();
+      const sessionModes = new Map<string, string>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
       const pendingConnectionErrors = new Map<string, string>();
@@ -210,14 +219,21 @@ export default function contribute(
 
             state.phase = "opening";
             const currentSnapshot = sessionSnapshots.get(sessionId) ?? snapshot;
-            await connection.send({
+            const recoveryOpenInput = {
               ...currentSnapshot.openInput,
               type: "session.open",
               requestId: openRequestId,
               sessionId,
               persistence: currentSnapshot.persistence,
               history: "skip",
-            } as any);
+            } as any;
+            if (isDangerouslySkipPermissionsMode(recoveryOpenInput.config?.mode)) {
+              recoveryOpenInput.config = {
+                ...recoveryOpenInput.config,
+                mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+              };
+            }
+            await connection.send(recoveryOpenInput);
             await openPromise;
             cleanupRequestIds();
 
@@ -348,7 +364,12 @@ export default function contribute(
           }
         }
 
-        if (event.type === "session.opened") {
+        if (event.type === "catalog" && event.catalog) {
+          event = {
+            ...event,
+            catalog: enrichCatalogModes(event.catalog),
+          };
+        } else if (event.type === "session.opened") {
           const nativeSessionId = event.persistence?.data?.sessionId;
           if (typeof nativeSessionId === "string" && nativeSessionId !== "") {
             conversationIds.set(event.sessionId, nativeSessionId);
@@ -364,12 +385,39 @@ export default function contribute(
             event = { ...event, capabilities: [...event.capabilities, "prompt.steer"] };
           }
         } else if (event.type === "session.config") {
+          const currentMode = sessionModes.get(event.sessionId);
+          event = {
+            ...event,
+            config: enrichConfigModes(event.config, currentMode),
+          };
           const snap = sessionSnapshots.get(event.sessionId);
           if (snap && event.config) {
             sessionSnapshots.set(
               event.sessionId,
               applyConfigEventSnapshot(snap, event.config),
             );
+          }
+        } else if (event.type === "session.permission") {
+          if (isDangerouslySkipPermissionsMode(sessionModes.get(event.sessionId))) {
+            const allowAction = findAllowPermissionAction(event.request?.actions);
+            void connection.send({
+              type: "session.permission",
+              sessionId: event.sessionId,
+              permissionId: event.request?.id,
+              response: {
+                behavior: "allow",
+                ...(allowAction?.id !== undefined ? { selectedActionId: allowAction.id } : {}),
+              },
+            }).catch((error) => {
+              console.warn(
+                `[agy-provider] Failed to auto-approve permission ${event.request?.id}: ${(error as Error).message}`,
+              );
+            });
+            return;
+          }
+        } else if (event.type === "session.permission_resolved") {
+          if (isDangerouslySkipPermissionsMode(sessionModes.get(event.sessionId))) {
+            return;
           }
         } else if (event.type === "session.turn") {
           if (event.state === "started") {
@@ -480,6 +528,7 @@ export default function contribute(
             }
           }
         } else if (event.type === "session.closed") {
+          sessionModes.delete(event.sessionId);
           pendingQuotaErrors.delete(event.sessionId);
           pendingMcpErrors.delete(event.sessionId);
           pendingConnectionErrors.delete(event.sessionId);
@@ -571,13 +620,48 @@ export default function contribute(
             if (typeof systemPrompt === "string" && systemPrompt.trim().length > 0) {
               pendingSystemPrompts.set(input.sessionId, systemPrompt.trim());
             }
+            const requestedMode = input.config?.mode;
+            if (isDangerouslySkipPermissionsMode(requestedMode)) {
+              sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+              input = {
+                ...input,
+                config: {
+                  ...input.config,
+                  mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                },
+              };
+            } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
+              sessionModes.set(input.sessionId, requestedMode);
+            }
           }
           if (input?.type === "session.configure" && typeof input.sessionId === "string") {
+            if (input.changes && "mode" in input.changes) {
+              const requestedMode = input.changes.mode;
+              if (isDangerouslySkipPermissionsMode(requestedMode)) {
+                sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+                input = {
+                  ...input,
+                  changes: {
+                    ...input.changes,
+                    mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                  },
+                };
+              } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
+                sessionModes.set(input.sessionId, requestedMode);
+              } else if (requestedMode === null) {
+                sessionModes.delete(input.sessionId);
+              }
+            }
             const snap = sessionSnapshots.get(input.sessionId);
             if (snap) {
+              const recordedMode = sessionModes.get(input.sessionId);
+              const snapshotChanges =
+                isDangerouslySkipPermissionsMode(recordedMode) && input.changes
+                  ? { ...input.changes, mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID }
+                  : input.changes;
               sessionSnapshots.set(
                 input.sessionId,
-                applyConfigureChanges(snap, input.changes),
+                applyConfigureChanges(snap, snapshotChanges),
               );
             }
           }
@@ -660,8 +744,19 @@ export default function contribute(
           }
           const resolvedInput = await withMcpServers(input);
           if (resolvedInput?.type === "session.open" && typeof resolvedInput.sessionId === "string") {
+            const recordedMode = sessionModes.get(resolvedInput.sessionId);
+            const snapshotOpenInput =
+              isDangerouslySkipPermissionsMode(recordedMode) && resolvedInput.config
+                ? {
+                    ...resolvedInput,
+                    config: {
+                      ...resolvedInput.config,
+                      mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
+                    },
+                  }
+                : resolvedInput;
             sessionSnapshots.set(resolvedInput.sessionId, {
-              openInput: resolvedInput as Record<string, any>,
+              openInput: snapshotOpenInput as Record<string, any>,
               persistence: (resolvedInput as any).persistence,
             });
           }

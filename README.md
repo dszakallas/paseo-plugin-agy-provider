@@ -66,6 +66,12 @@ paseo run --provider agy "Explain this project's entry point."
 
 Models and modes come from the official server and your account.
 
+### Modes & permissions
+
+In addition to Antigravity's standard modes (**Default**, **Accept edits**, **Plan**), the plugin provides a **Dangerously skip permissions** mode (also compatible with legacy `yolo` mode). When active, tool permission prompts (such as shell commands and terminal execution) are automatically approved without user interaction.
+
+To enable `--dangerously-skip-permissions` for all sessions at the server process level, set `PASEO_AGY_DANGEROUSLY_SKIP_PERMISSIONS=1` in the daemon's launch environment.
+
 ```sh
 paseo plugin update agy-provider
 paseo plugin reload agy-provider

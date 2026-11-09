@@ -33,6 +33,11 @@ test("official platform commands and literal executable overrides", () => {
     agyCommand("darwin", "/nix/store/xxx-antigravity-par/libexec/agy_acp_server.par"),
     ["agy", "acp"],
   );
+  assert.deepEqual(agyCommand("darwin", "", true), ["agy", "acp", "--dangerously-skip-permissions"]);
+  assert.deepEqual(
+    agyCommand("linux", "/custom/bin/agy", true),
+    ["/custom/bin/agy", "acp", "--dangerously-skip-permissions"],
+  );
   assert.throws(() => agyCommand("freebsd", ""), /does not support freebsd/);
 });
 
