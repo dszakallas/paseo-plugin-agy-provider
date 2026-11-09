@@ -40,14 +40,24 @@ Because the Antigravity ACP server is an external, Google-managed binary with it
 ### 2. Turn Steering via Antigravity PreInvocation Hook
 
 - **Root Cause**:
-  Paseo supports mid-turn "steering" (`delivery: "steer"`): injecting guidance while an agent is thinking or executing tools. However, Antigravity ACP only reads prompts between turns; sending an ACP `session/prompt` while a turn is active causes the ACP adapter to interrupt the turn and restart.
+  Paseo supports mid-turn "steering" (`delivery: "steer"`): injecting user guidance while an agent is thinking or running tools. While the native `agy acp` Go server implements mid-turn steering (`canSteerActiveTurn`, `waitForSteer`, `finishSteer` in its turn loop), Paseo's client-side ACP runtime (`@getpaseo/plugin/server/acp`, specifically `AcpSessionRuntime.admitPrompt`) does not support concurrent prompts. If an active prompt is in flight, `admitPrompt` unconditionally executes:
+  ```js
+  if (active) {
+      await this.interrupt(); // sends session/cancel to agy acp
+      await active.settled;
+  }
+  ```
+  Forwarding a steer prompt directly to Paseo's ACP connection during an active turn would therefore cause Paseo's ACP runtime to cancel the running turn in `agy acp` and start a separate turn. Because `runAcpProvider` wraps the transport and does not expose raw stdio JSON-RPC calls or advertise `prompt.steer`, the plugin cannot bypass `admitPrompt` directly.
 - **Implementation** ([server/steer.ts](server/steer.ts), [index.server.ts](index.server.ts)):
   1. The plugin registers a global Antigravity `PreInvocation` command hook in `~/.gemini/config/hooks.json`.
-  2. When a steer prompt arrives for an active turn, instead of forwarding it over ACP, the plugin writes the message to a file-backed FIFO queue keyed by conversation ID (`~/.gemini/antigravity-cli/steer/<conversation-id>/`).
-  3. The plugin immediately emits synthetic `timeline.item` (`user_message`) and `session.prompt_result` (`type: "steer"`) events so the message appears in the chat immediately.
-  4. Before each model invocation within the turn, Antigravity executes the `PreInvocation` hook, which drains one queued message from disk and injects it directly into the agent's context.
-  5. If no turn is active when the steer arrives, it degrades safely to a regular prompt (`delivery: "auto"`).
-  6. The hook is removed on plugin teardown.
+  2. When a `session.prompt` with `delivery: "steer"` arrives for an active turn, the plugin intercepts it in `index.server.ts` before it reaches Paseo's ACP runtime.
+  3. The plugin writes the message to a file-backed FIFO queue keyed by conversation ID (`~/.gemini/antigravity-cli/steer/<conversation-id>/`).
+  4. The plugin immediately emits synthetic `timeline.item` (`user_message`) and `session.prompt_result` (`type: "steer"`) events so the message appears in the chat immediately without interrupting the running turn.
+  5. Before each model invocation within the turn, Antigravity executes the `PreInvocation` hook, which drains one queued message from disk and injects it directly into the agent's context as an injected user step.
+  6. If no turn is active when the steer arrives (or the turn ended before delivery), the message degrades safely to a regular prompt (`delivery: "auto"`).
+  7. The hook is removed on plugin teardown.
+- **Upstream Path to Native Steering**:
+  To eliminate the `PreInvocation` hook and the filesystem queue, Paseo's upstream `AcpSessionRuntime.admitPrompt` in `@getpaseo/plugin` must support `delivery: "steer"` by bypassing `this.interrupt()` and dispatching `session/prompt` directly to the active session. Once that lands, the plugin can remove `server/steer.ts` and forward steer prompts natively to `agy acp`.
 - **Status**: Implemented. Advertises `prompt.steer` capability.
 
 ---
