@@ -118,7 +118,7 @@ const GATE_SCRIPT = `#!/bin/sh
 root='__ROOT__'
 set -- "$root"/queue/*/*.json
 [ -e "$1" ] || { printf '{}'; exit 0; }
-exec '__NODE__' '__HOOK__'
+ELECTRON_RUN_AS_NODE=1 exec '__NODE__' '__HOOK__'
 `;
 
 function hookGatePath(): string {

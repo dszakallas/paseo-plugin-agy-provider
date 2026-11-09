@@ -21,14 +21,23 @@ test("manifest accepts every Paseo version from 0.12 below 1.0.0 for both runtim
 });
 
 test("official platform commands and literal executable overrides", () => {
-  assert.deepEqual(agyCommand("darwin", ""), ["agy_acp_server.par"]);
-  assert.deepEqual(agyCommand("linux", ""), ["agy_acp_server.par", "--uid="]);
-  assert.deepEqual(agyCommand("win32", ""), ["agy_acp_server.exe"]);
-  const executable = "/Applications/Antigravity ACP/agy_acp_server.par";
-  assert.deepEqual(agyCommand("darwin", executable), [executable]);
-  assert.deepEqual(agyCommand("linux", executable), [executable, "--uid="]);
-  const windowsExecutable = "C:\\Program Files\\Antigravity ACP\\agy_acp_server.exe";
-  assert.deepEqual(agyCommand("win32", windowsExecutable), [windowsExecutable]);
+  assert.deepEqual(agyCommand("darwin", ""), ["agy", "acp"]);
+  assert.deepEqual(agyCommand("linux", ""), ["agy", "acp"]);
+  assert.deepEqual(agyCommand("win32", ""), ["agy.exe", "acp"]);
+  const executable = "/opt/homebrew/bin/agy";
+  assert.deepEqual(agyCommand("darwin", executable), [executable, "acp"]);
+  assert.deepEqual(agyCommand("linux", executable), [executable, "acp"]);
+  const windowsExecutable = "C:\\Program Files\\Antigravity\\agy.exe";
+  assert.deepEqual(agyCommand("win32", windowsExecutable), [windowsExecutable, "acp"]);
+  assert.deepEqual(
+    agyCommand("darwin", "/nix/store/xxx-antigravity-par/libexec/agy_acp_server.par"),
+    ["agy", "acp"],
+  );
+  assert.deepEqual(agyCommand("darwin", "", true), ["agy", "acp", "--dangerously-skip-permissions"]);
+  assert.deepEqual(
+    agyCommand("linux", "/custom/bin/agy", true),
+    ["/custom/bin/agy", "acp", "--dangerously-skip-permissions"],
+  );
   assert.throws(() => agyCommand("freebsd", ""), /does not support freebsd/);
 });
 

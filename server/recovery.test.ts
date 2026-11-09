@@ -8,8 +8,6 @@ import contributeServer from "../index.server.ts";
 import {
   applyConfigEventSnapshot,
   applyConfigureChanges,
-  formatConnectionLostMessage,
-  isConnectionLostErrorMessage,
   isRecoverableTurnFailureMessage,
 } from "./recovery.ts";
 
@@ -28,22 +26,14 @@ function isolateGeminiHome(t: { after(fn: () => void): void }): void {
   });
 }
 
-test("isConnectionLostErrorMessage and isRecoverableTurnFailureMessage detect connection and rebuild errors", () => {
-  const raw =
-    "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)";
-  assert.equal(isConnectionLostErrorMessage(raw), true);
-  assert.equal(formatConnectionLostMessage(`  ${raw}\n`), raw);
-  assert.equal(isConnectionLostErrorMessage("Normal assistant reply"), false);
-  assert.equal(isConnectionLostErrorMessage(""), false);
-  assert.equal(isConnectionLostErrorMessage(null), false);
-
+test("isRecoverableTurnFailureMessage detects recoverable turn failures", () => {
   assert.equal(isRecoverableTurnFailureMessage("Session not found: 60ea57ec"), true);
-  assert.equal(
-    isRecoverableTurnFailureMessage("Failed to rebuild agent: received 1000 (OK)"),
-    true,
-  );
   assert.equal(isRecoverableTurnFailureMessage("Internal error"), true);
+  assert.equal(isRecoverableTurnFailureMessage("ACP transport closed unexpectedly"), true);
   assert.equal(isRecoverableTurnFailureMessage("Permission denied"), false);
+  assert.equal(isRecoverableTurnFailureMessage("User cancelled turn"), false);
+  assert.equal(isRecoverableTurnFailureMessage(""), false);
+  assert.equal(isRecoverableTurnFailureMessage(null), false);
 });
 
 test("applyConfigureChanges and applyConfigEventSnapshot preserve active session config", () => {
@@ -157,21 +147,16 @@ test("contributeServer transparently rebuilds the ACP session and replays the tu
         });
 
         if (promptAttempt === 1) {
-          // First attempt: agy_acp_server.par fails _rebuild_session_agent with 1000 (OK)
-          eventCallback!({
-            type: "timeline.item",
-            sessionId: input.sessionId,
-            item: {
-              type: "assistant_message",
-              id: "agent_message_chunk:1",
-              text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
-            },
-          });
+          // First attempt: ACP server returns turn failed with Session not found
           eventCallback!({
             type: "session.turn",
             sessionId: input.sessionId,
             turnId,
-            state: "completed",
+            state: "failed",
+            error: {
+              message: "Session not found: native-60ea57ec",
+              code: "session_not_found",
+            },
           });
         } else {
           // Second attempt after automatic session.close + session.open: succeeds!
@@ -321,19 +306,13 @@ test("contributeServer fails the turn with connection_lost if recovery also fail
     state: "started",
   });
   eventCallback!({
-    type: "timeline.item",
-    sessionId: "sess-no-persist",
-    item: {
-      type: "assistant_message",
-      id: "agent_message_chunk:1",
-      text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
-    },
-  });
-  eventCallback!({
     type: "session.turn",
     sessionId: "sess-no-persist",
     turnId: "turn-1",
-    state: "completed",
+    state: "failed",
+    error: {
+      message: "Session not found: sess-no-persist",
+    },
   });
 
   assert.equal(received.length, 2);
@@ -343,8 +322,7 @@ test("contributeServer fails the turn with connection_lost if recovery also fail
     turnId: "turn-1",
     state: "failed",
     error: {
-      message:
-        "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
+      message: "Session not found: sess-no-persist",
       code: "connection_lost",
     },
   });

@@ -16,14 +16,18 @@ import {
   type SessionOpenSnapshot,
   applyConfigEventSnapshot,
   applyConfigureChanges,
-  formatConnectionLostMessage,
-  isConnectionLostErrorMessage,
   isRecoverableTurnFailureMessage,
 } from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
+import {
+  DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
+  NATIVE_AUTO_APPROVE_BASE_MODE,
+  enrichCatalogModes,
+  enrichConfigModes,
+  findAllowPermissionAction,
+  isDangerouslySkipPermissionsMode,
+} from "./server/modes.ts";
 import { enqueueSteer, installSteerHook, removeSteerHook } from "./server/steer.ts";
-import { installProgressHook, removeProgressHook } from "./server/progress.ts";
-import { installTaskGuardHook, removeTaskGuardHook } from "./server/task-guard.ts";
 
 // `ProviderInput` is not exported from the package root; session.open is the only shape used here.
 type ProviderInput = {
@@ -95,38 +99,24 @@ export default function contribute(
     command: agyCommand(),
   });
 
-  // Steering needs a PreInvocation hook, progress narration a SessionStart hook,
-  // and task-guard a PreToolUse hook in Antigravity's global config.
+  // Steering needs a PreInvocation hook in Antigravity's global config.
   try {
     const steerHook = installSteerHook();
     if (steerHook.changed) {
       console.log(`[agy-provider] Installed steering hook in ${steerHook.path}`);
     }
-    const progressHook = installProgressHook();
-    if (progressHook.changed) {
-      console.log(`[agy-provider] Installed progress hook in ${progressHook.path}`);
-    }
-    const taskGuardHook = installTaskGuardHook();
-    if (taskGuardHook.changed) {
-      console.log(`[agy-provider] Installed task-guard hook in ${taskGuardHook.path}`);
-    }
   } catch (error) {
     console.warn(`[agy-provider] Could not install hooks: ${(error as Error).message}`);
   }
 
-  // Marks sessions launched here, so the progress and task-guard hooks apply only to them.
-  server.before("agent.session_open", ({ request }) => {
-    if (request.provider !== "agy" || request.env.PASEO_AGY_PROGRESS === "1") return;
-    return { ...request, env: { ...request.env, PASEO_AGY_PROGRESS: "1" } };
-  });
   server.registerProvider({
     ...provider,
     async connect(request) {
       const connection = await provider.connect(request);
       const listeners = new Set<(event: any) => void>();
+      const sessionModes = new Map<string, string>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
-      const pendingConnectionErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
       const conversationIds = new Map<string, string>();
       const pendingSystemPrompts = new Map<string, string>();
@@ -210,14 +200,21 @@ export default function contribute(
 
             state.phase = "opening";
             const currentSnapshot = sessionSnapshots.get(sessionId) ?? snapshot;
-            await connection.send({
+            const recoveryOpenInput = {
               ...currentSnapshot.openInput,
               type: "session.open",
               requestId: openRequestId,
               sessionId,
               persistence: currentSnapshot.persistence,
               history: "skip",
-            } as any);
+            } as any;
+            if (isDangerouslySkipPermissionsMode(recoveryOpenInput.config?.mode)) {
+              recoveryOpenInput.config = {
+                ...recoveryOpenInput.config,
+                mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+              };
+            }
+            await connection.send(recoveryOpenInput);
             await openPromise;
             cleanupRequestIds();
 
@@ -348,7 +345,12 @@ export default function contribute(
           }
         }
 
-        if (event.type === "session.opened") {
+        if (event.type === "catalog" && event.catalog) {
+          event = {
+            ...event,
+            catalog: enrichCatalogModes(event.catalog),
+          };
+        } else if (event.type === "session.opened") {
           const nativeSessionId = event.persistence?.data?.sessionId;
           if (typeof nativeSessionId === "string" && nativeSessionId !== "") {
             conversationIds.set(event.sessionId, nativeSessionId);
@@ -364,6 +366,11 @@ export default function contribute(
             event = { ...event, capabilities: [...event.capabilities, "prompt.steer"] };
           }
         } else if (event.type === "session.config") {
+          const currentMode = sessionModes.get(event.sessionId);
+          event = {
+            ...event,
+            config: enrichConfigModes(event.config, currentMode),
+          };
           const snap = sessionSnapshots.get(event.sessionId);
           if (snap && event.config) {
             sessionSnapshots.set(
@@ -371,34 +378,51 @@ export default function contribute(
               applyConfigEventSnapshot(snap, event.config),
             );
           }
+        } else if (event.type === "session.permission") {
+          if (isDangerouslySkipPermissionsMode(sessionModes.get(event.sessionId))) {
+            const allowAction = findAllowPermissionAction(event.request?.actions);
+            void connection.send({
+              type: "session.permission",
+              sessionId: event.sessionId,
+              permissionId: event.request?.id,
+              response: {
+                behavior: "allow",
+                ...(allowAction?.id !== undefined ? { selectedActionId: allowAction.id } : {}),
+              },
+            }).catch((error) => {
+              console.warn(
+                `[agy-provider] Failed to auto-approve permission ${event.request?.id}: ${(error as Error).message}`,
+              );
+            });
+            return;
+          }
+        } else if (event.type === "session.permission_resolved") {
+          if (isDangerouslySkipPermissionsMode(sessionModes.get(event.sessionId))) {
+            return;
+          }
         } else if (event.type === "session.turn") {
           if (event.state === "started") {
             activeTurns.set(event.sessionId, event.turnId);
             pendingQuotaErrors.delete(event.sessionId);
             pendingMcpErrors.delete(event.sessionId);
-            pendingConnectionErrors.delete(event.sessionId);
           } else {
             activeTurns.delete(event.sessionId);
-            const pendingConnection = pendingConnectionErrors.get(event.sessionId);
-            pendingConnectionErrors.delete(event.sessionId);
 
             const isRecoverableFailure =
-              Boolean(pendingConnection) ||
-              (event.state === "failed" &&
-                isRecoverableTurnFailureMessage(event.error?.message));
+              event.state === "failed" &&
+              isRecoverableTurnFailureMessage(event.error?.message);
 
             if (isRecoverableFailure) {
               const lastPrompt = lastPrompts.get(event.sessionId);
               const snapshot = sessionSnapshots.get(event.sessionId);
               const fallbackError =
-                pendingConnection ??
                 event.error?.message ??
-                "Agent connection was lost and could not be re-established.";
+                "Agent session was lost and could not be recovered.";
 
               if (lastPrompt && !lastPrompt.retried && snapshot?.persistence) {
                 lastPrompt.retried = true;
                 console.warn(
-                  `[agy-provider] Recovering dead ACP session ${event.sessionId} and replaying turn (${fallbackError})`,
+                  `[agy-provider] Recovering failed ACP session ${event.sessionId} and replaying turn (${fallbackError})`,
                 );
                 void startSessionRecovery(event.sessionId, {
                   replayPrompt: lastPrompt.input,
@@ -480,9 +504,9 @@ export default function contribute(
             }
           }
         } else if (event.type === "session.closed") {
+          sessionModes.delete(event.sessionId);
           pendingQuotaErrors.delete(event.sessionId);
           pendingMcpErrors.delete(event.sessionId);
-          pendingConnectionErrors.delete(event.sessionId);
           activeTurns.delete(event.sessionId);
           conversationIds.delete(event.sessionId);
           pendingSystemPrompts.delete(event.sessionId);
@@ -523,12 +547,6 @@ export default function contribute(
             event.item?.type === "assistant_message" ||
             event.item?.type === "reasoning"
           ) {
-            if (isConnectionLostErrorMessage(event.item?.text)) {
-              const cleanMessage = formatConnectionLostMessage(event.item.text);
-              console.warn(`[agy-provider] Connection lost: ${cleanMessage}`);
-              pendingConnectionErrors.set(event.sessionId, cleanMessage);
-              return;
-            }
             if (isQuotaExceededErrorMessage(event.item?.text)) {
               const cleanMessage = formatQuotaExceededMessage(event.item.text);
               console.warn(`[agy-provider] Quota exceeded: ${cleanMessage}`);
@@ -571,13 +589,48 @@ export default function contribute(
             if (typeof systemPrompt === "string" && systemPrompt.trim().length > 0) {
               pendingSystemPrompts.set(input.sessionId, systemPrompt.trim());
             }
+            const requestedMode = input.config?.mode;
+            if (isDangerouslySkipPermissionsMode(requestedMode)) {
+              sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+              input = {
+                ...input,
+                config: {
+                  ...input.config,
+                  mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                },
+              };
+            } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
+              sessionModes.set(input.sessionId, requestedMode);
+            }
           }
           if (input?.type === "session.configure" && typeof input.sessionId === "string") {
+            if (input.changes && "mode" in input.changes) {
+              const requestedMode = input.changes.mode;
+              if (isDangerouslySkipPermissionsMode(requestedMode)) {
+                sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+                input = {
+                  ...input,
+                  changes: {
+                    ...input.changes,
+                    mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                  },
+                };
+              } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
+                sessionModes.set(input.sessionId, requestedMode);
+              } else if (requestedMode === null) {
+                sessionModes.delete(input.sessionId);
+              }
+            }
             const snap = sessionSnapshots.get(input.sessionId);
             if (snap) {
+              const recordedMode = sessionModes.get(input.sessionId);
+              const snapshotChanges =
+                isDangerouslySkipPermissionsMode(recordedMode) && input.changes
+                  ? { ...input.changes, mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID }
+                  : input.changes;
               sessionSnapshots.set(
                 input.sessionId,
-                applyConfigureChanges(snap, input.changes),
+                applyConfigureChanges(snap, snapshotChanges),
               );
             }
           }
@@ -660,8 +713,19 @@ export default function contribute(
           }
           const resolvedInput = await withMcpServers(input);
           if (resolvedInput?.type === "session.open" && typeof resolvedInput.sessionId === "string") {
+            const recordedMode = sessionModes.get(resolvedInput.sessionId);
+            const snapshotOpenInput =
+              isDangerouslySkipPermissionsMode(recordedMode) && resolvedInput.config
+                ? {
+                    ...resolvedInput,
+                    config: {
+                      ...resolvedInput.config,
+                      mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
+                    },
+                  }
+                : resolvedInput;
             sessionSnapshots.set(resolvedInput.sessionId, {
-              openInput: resolvedInput as Record<string, any>,
+              openInput: snapshotOpenInput as Record<string, any>,
               persistence: (resolvedInput as any).persistence,
             });
           }
@@ -685,8 +749,6 @@ export default function contribute(
     // Leaving the hooks installed would spawn processes for a plugin that is no longer active.
     try {
       removeSteerHook();
-      removeProgressHook();
-      removeTaskGuardHook();
     } catch {
       // Best effort.
     }
