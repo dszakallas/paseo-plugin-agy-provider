@@ -13,7 +13,7 @@ Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/doc
 
 ### 1. Install the Antigravity CLI
 
-On the **Paseo daemon host**, install the official `agy` CLI (version 1.5.0 or later, which includes the built-in `agy acp` subcommand). The plugin selects the command for the daemon host on macOS, Linux, or Windows:
+On the **Paseo daemon host**, install the official `agy` CLI (version 1.5.4 or later, which includes the built-in `agy acp` subcommand with native Auto mode). The plugin selects the command for the daemon host on macOS, Linux, or Windows:
 
 | Platform | Executable | Plugin-supplied arguments |
 | --- | --- | --- |

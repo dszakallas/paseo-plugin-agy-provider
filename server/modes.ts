@@ -6,8 +6,7 @@ export const AUTO_MODE_ID = "auto";
 
 /**
  * Base native ACP mode to configure on the underlying `agy acp` server when
- * dangerously-skip-permissions mode is active (or when auto mode is selected on an
- * older ACP server that does not natively support auto mode). `accept-edits` allows
+ * dangerously-skip-permissions mode is active. `accept-edits` allows
  * native file edits without overhead while any remaining tools (e.g. terminal/commands)
  * emit ACP permission requests.
  */

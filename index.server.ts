@@ -116,7 +116,6 @@ export default function contribute(
       const connection = await provider.connect(request);
       const listeners = new Set<(event: any) => void>();
       const sessionModes = new Map<string, string>();
-      const nativeSupportedModes = new Set<string>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
@@ -136,12 +135,6 @@ export default function contribute(
         }
         if (requestedMode === "auto_edit") {
           return "accept-edits";
-        }
-        if (requestedMode === AUTO_MODE_ID) {
-          if (nativeSupportedModes.size > 0 && !nativeSupportedModes.has(AUTO_MODE_ID)) {
-            return NATIVE_AUTO_APPROVE_BASE_MODE;
-          }
-          return AUTO_MODE_ID;
         }
         return requestedMode;
       };
@@ -366,11 +359,6 @@ export default function contribute(
         }
 
         if (event.type === "catalog" && event.catalog) {
-          if (Array.isArray(event.catalog.modes)) {
-            for (const mode of event.catalog.modes) {
-              if (mode?.id) nativeSupportedModes.add(mode.id);
-            }
-          }
           event = {
             ...event,
             catalog: enrichCatalogModes(event.catalog),
@@ -391,11 +379,6 @@ export default function contribute(
             event = { ...event, capabilities: [...event.capabilities, "prompt.steer"] };
           }
         } else if (event.type === "session.config") {
-          if (event.config && Array.isArray(event.config.modes)) {
-            for (const mode of event.config.modes) {
-              if (mode?.id) nativeSupportedModes.add(mode.id);
-            }
-          }
           const currentMode = sessionModes.get(event.sessionId);
           event = {
             ...event,
