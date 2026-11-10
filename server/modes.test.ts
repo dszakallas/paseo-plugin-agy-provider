@@ -6,6 +6,8 @@ import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contributeServer from "../index.server.ts";
 import {
+  AUTO_MODE,
+  AUTO_MODE_ID,
   DANGEROUSLY_SKIP_PERMISSIONS_MODE,
   DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
   NATIVE_AUTO_APPROVE_BASE_MODE,
@@ -13,6 +15,7 @@ import {
   enrichCatalogModes,
   enrichConfigModes,
   findAllowPermissionAction,
+  isAutoMode,
   isDangerouslySkipPermissionsMode,
 } from "./modes.ts";
 
@@ -36,10 +39,20 @@ test("modes helper functions correctly identify and enrich modes", () => {
   assert.equal(isDangerouslySkipPermissionsMode("yolo"), true);
   assert.equal(isDangerouslySkipPermissionsMode("default"), false);
   assert.equal(isDangerouslySkipPermissionsMode("accept-edits"), false);
+  assert.equal(isDangerouslySkipPermissionsMode("auto"), false);
   assert.equal(isDangerouslySkipPermissionsMode("plan"), false);
   assert.equal(isDangerouslySkipPermissionsMode(undefined), false);
   assert.equal(isDangerouslySkipPermissionsMode(null), false);
   assert.equal(isDangerouslySkipPermissionsMode(""), false);
+
+  assert.equal(isAutoMode("auto"), true);
+  assert.equal(isAutoMode("default"), false);
+  assert.equal(isAutoMode("dangerously-skip-permissions"), false);
+  assert.equal(isAutoMode(undefined), false);
+
+  assert.equal(AUTO_MODE.id, "auto");
+  assert.equal(AUTO_MODE.icon, "ShieldCheck");
+  assert.equal(AUTO_MODE.colorTier, "moderate");
 
   assert.equal(DANGEROUSLY_SKIP_PERMISSIONS_MODE.isUnattended, true);
   assert.equal(DANGEROUSLY_SKIP_PERMISSIONS_MODE.colorTier, "dangerous");
@@ -53,12 +66,19 @@ test("modes helper functions correctly identify and enrich modes", () => {
     ],
   };
   const enrichedCatalog = enrichCatalogModes(baseCatalog);
-  assert.equal(enrichedCatalog.modes.length, 3);
-  assert.equal(enrichedCatalog.modes[2].id, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+  assert.equal(enrichedCatalog.modes.length, 4);
+  assert.equal(enrichedCatalog.modes[0].icon, "Shield");
+  assert.equal(enrichedCatalog.modes[0].colorTier, "safe");
+  assert.equal(enrichedCatalog.modes[1].icon, "ShieldPlus");
+  assert.equal(enrichedCatalog.modes[1].colorTier, "moderate");
+  assert.equal(enrichedCatalog.modes[2].id, AUTO_MODE_ID);
+  assert.equal(enrichedCatalog.modes[2].icon, "ShieldCheck");
+  assert.equal(enrichedCatalog.modes[3].id, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+  assert.equal(enrichedCatalog.modes[3].icon, "ShieldOff");
 
   // Does not duplicate if already present
   const alreadyEnriched = enrichCatalogModes(enrichedCatalog);
-  assert.equal(alreadyEnriched.modes.length, 3);
+  assert.equal(alreadyEnriched.modes.length, 4);
 
   const baseConfig = {
     models: [],
@@ -69,14 +89,17 @@ test("modes helper functions correctly identify and enrich modes", () => {
   };
   const enrichedConfigDefault = enrichConfigModes(baseConfig, "default");
   assert.equal(enrichedConfigDefault.mode, "default");
-  assert.equal(enrichedConfigDefault.modes.length, 2);
+  assert.equal(enrichedConfigDefault.modes.length, 3);
 
   const enrichedConfigDangerous = enrichConfigModes(baseConfig, "dangerously-skip-permissions");
   assert.equal(enrichedConfigDangerous.mode, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
-  assert.equal(enrichedConfigDangerous.modes.length, 2);
+  assert.equal(enrichedConfigDangerous.modes.length, 3);
 
   const enrichedConfigYolo = enrichConfigModes(baseConfig, "yolo");
   assert.equal(enrichedConfigYolo.mode, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+
+  const enrichedConfigAuto = enrichConfigModes(baseConfig, "auto");
+  assert.equal(enrichedConfigAuto.mode, "auto");
 
   const actions = [
     { id: "deny", label: "Deny", behavior: "deny" },
@@ -138,9 +161,13 @@ test("contributeServer advertises dangerously-skip-permissions mode in catalog",
   assert.equal(received.length, 1);
   const catalogEvent = received[0];
   assert.equal(catalogEvent.type, "catalog");
-  assert.equal(catalogEvent.catalog.modes.length, 4);
+  assert.equal(catalogEvent.catalog.modes.length, 5);
   assert.equal(
     catalogEvent.catalog.modes.some((m: any) => m.id === DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID),
+    true,
+  );
+  assert.equal(
+    catalogEvent.catalog.modes.some((m: any) => m.id === "auto"),
     true,
   );
 });
@@ -661,4 +688,235 @@ test("session recovery preserves dangerously-skip-permissions mode and sends acc
   // Verify that the replayed permission request was auto-approved!
   const permApproved = sentInputs.find((i) => i.permissionId === "permission:replayed-tool");
   assert.equal(permApproved?.response?.behavior, "allow");
+});
+
+test("session open in auto mode sends auto to ACP when supported, and prompts for permissions", async (t) => {
+  isolateGeminiHome(t);
+  let eventCallback: ((event: unknown) => void) | undefined;
+  const sentInputs: any[] = [];
+
+  const connection = {
+    capabilities: ["session.configure", "session.persistence"],
+    send: async (input: any) => {
+      sentInputs.push(input);
+      if (input.type === "catalog") {
+        eventCallback!({
+          type: "catalog",
+          requestId: input.requestId,
+          catalog: {
+            models: [{ id: "argon", label: "Argon" }],
+            modes: [
+              { id: "default", label: "Default" },
+              { id: "accept-edits", label: "Accept edits" },
+              { id: "auto", label: "Auto" },
+              { id: "plan", label: "Plan" },
+            ],
+          },
+        });
+      }
+      if (input.type === "session.open") {
+        eventCallback!({
+          type: "session.opened",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          capabilities: ["session.configure", "session.persistence"],
+          persistence: { version: 1, data: { sessionId: "native-auto-1" } },
+          cwd: input.config.cwd,
+        });
+        eventCallback!({
+          type: "session.config",
+          sessionId: input.sessionId,
+          config: {
+            mode: input.config.mode,
+            modes: [
+              { id: "default", label: "Default" },
+              { id: "accept-edits", label: "Accept edits" },
+              { id: "auto", label: "Auto" },
+              { id: "plan", label: "Plan" },
+            ],
+            models: [],
+            thinkingOptions: [],
+            settings: [],
+          },
+        });
+        eventCallback!({
+          type: "session.ready",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+        });
+      }
+    },
+    onEvent: (cb: (event: unknown) => void) => {
+      eventCallback = cb;
+      return () => {};
+    },
+    close: async () => {},
+  };
+
+  let registered: any;
+  contributeServer(
+    {
+      registerProvider: (p: any) => void (registered = p),
+      before: () => () => {},
+      handle: () => {},
+      registerUsageSource: () => {},
+    } as unknown as PluginServerContext,
+    (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
+  );
+
+  const conn = await registered.connect({ versions: [1], capabilities: [] });
+  const received: any[] = [];
+  conn.onEvent((event: any) => received.push(event));
+
+  // Prime catalog
+  await conn.send({ type: "catalog", requestId: "cat-1", cwd: "/tmp" });
+
+  await conn.send({
+    type: "session.open",
+    requestId: "open-auto-1",
+    sessionId: "sess-auto-1",
+    config: {
+      cwd: "/tmp",
+      env: {},
+      mcpServers: {},
+      mode: "auto",
+      settings: {},
+      persist: true,
+    },
+    history: "replay",
+  });
+
+  const openInput = sentInputs.find((i) => i.type === "session.open");
+  assert.equal(openInput?.config?.mode, "auto");
+
+  // Verify that permission request in auto mode is NOT auto-approved by the plugin
+  eventCallback!({
+    type: "session.permission",
+    sessionId: "sess-auto-1",
+    request: {
+      id: "perm-auto-1",
+      title: "Run command outside sandbox",
+      actions: [
+        { id: "allow", label: "Allow", behavior: "allow" },
+        { id: "deny", label: "Deny", behavior: "deny" },
+      ],
+    },
+  });
+
+  const permEvent = received.find((e: any) => e.type === "session.permission");
+  assert.equal(permEvent?.request?.id, "perm-auto-1");
+  // Ensure plugin did NOT automatically send a permission response
+  const sentPerm = sentInputs.find((i) => i.type === "session.permission");
+  assert.equal(sentPerm, undefined);
+});
+
+test("session.configure switches dynamically between default and auto mode", async (t) => {
+  isolateGeminiHome(t);
+  let eventCallback: ((event: unknown) => void) | undefined;
+  const sentInputs: any[] = [];
+
+  const connection = {
+    capabilities: ["session.configure", "session.persistence"],
+    send: async (input: any) => {
+      sentInputs.push(input);
+      if (input.type === "session.open") {
+        eventCallback!({
+          type: "session.opened",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          capabilities: ["session.configure", "session.persistence"],
+          persistence: { version: 1, data: { sessionId: "native-switch-auto" } },
+          cwd: input.config.cwd,
+        });
+        eventCallback!({
+          type: "session.config",
+          sessionId: input.sessionId,
+          config: {
+            mode: "default",
+            modes: [
+              { id: "default", label: "Default" },
+              { id: "accept-edits", label: "Accept edits" },
+              { id: "auto", label: "Auto" },
+              { id: "plan", label: "Plan" },
+            ],
+            models: [],
+            thinkingOptions: [],
+            settings: [],
+          },
+        });
+        eventCallback!({
+          type: "session.ready",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+        });
+      }
+      if (input.type === "session.configure") {
+        eventCallback!({
+          type: "session.config",
+          sessionId: input.sessionId,
+          config: {
+            mode: input.changes.mode,
+            modes: [
+              { id: "default", label: "Default" },
+              { id: "accept-edits", label: "Accept edits" },
+              { id: "auto", label: "Auto" },
+              { id: "plan", label: "Plan" },
+            ],
+            models: [],
+            thinkingOptions: [],
+            settings: [],
+          },
+        });
+        eventCallback!({
+          type: "request.completed",
+          requestId: input.requestId,
+        });
+      }
+    },
+    onEvent: (cb: (event: unknown) => void) => {
+      eventCallback = cb;
+      return () => {};
+    },
+    close: async () => {},
+  };
+
+  let registered: any;
+  contributeServer(
+    {
+      registerProvider: (p: any) => void (registered = p),
+      before: () => () => {},
+      handle: () => {},
+      registerUsageSource: () => {},
+    } as unknown as PluginServerContext,
+    (() => ({ id: "agy", label: "x", connect: async () => connection })) as any,
+  );
+
+  const conn = await registered.connect({ versions: [1], capabilities: [] });
+  const received: any[] = [];
+  conn.onEvent((event: any) => received.push(event));
+
+  await conn.send({
+    type: "session.open",
+    requestId: "open-switch",
+    sessionId: "sess-switch",
+    config: {
+      cwd: "/tmp",
+      env: {},
+      mcpServers: {},
+      mode: "default",
+      settings: {},
+      persist: true,
+    },
+    history: "replay",
+  });
+
+  await conn.send({
+    type: "session.configure",
+    requestId: "conf-to-auto",
+    sessionId: "sess-switch",
+    changes: { mode: "auto" },
+  });
+
+  const confInput = sentInputs.find((i) => i.requestId === "conf-to-auto");
+  assert.equal(confInput?.changes?.mode, "auto");
 });

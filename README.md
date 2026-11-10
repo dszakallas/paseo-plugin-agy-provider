@@ -13,7 +13,7 @@ Use Google's official **Antigravity ACP server** in [Paseo](https://paseo.sh/doc
 
 ### 1. Install the Antigravity CLI
 
-On the **Paseo daemon host**, install the official `agy` CLI (version 1.5.0 or later, which includes the built-in `agy acp` subcommand). The plugin selects the command for the daemon host on macOS, Linux, or Windows:
+On the **Paseo daemon host**, install the official `agy` CLI (version 1.5.4 or later, which includes the built-in `agy acp` subcommand with native Auto mode). The plugin selects the command for the daemon host on macOS, Linux, or Windows:
 
 | Platform | Executable | Plugin-supplied arguments |
 | --- | --- | --- |
@@ -68,7 +68,13 @@ Models and modes come from the official server and your account.
 
 ### Modes & permissions
 
-In addition to Antigravity's standard modes (**Default**, **Accept edits**, **Plan**), the plugin provides a **Dangerously skip permissions** mode (also compatible with legacy `yolo` mode). When active, tool permission prompts (such as shell commands and terminal execution) are automatically approved without user interaction.
+In addition to Antigravity's standard modes (**Default**, **Accept edits**, **Auto**, **Plan**), the plugin provides a **Dangerously skip permissions** mode (also compatible with legacy `yolo` mode):
+
+- **Default**: Ask before edits and commands, per permission settings.
+- **Accept edits**: Approve file edits in the workspace without asking.
+- **Auto** (introduced in `agy` 1.5.4): Approves edits inside the workspace and runs safe commands in the terminal sandbox without asking; asks before actions that would leave the sandbox unless cleared by review.
+- **Plan**: Plan carefully before executing a task.
+- **Dangerously skip permissions**: Auto-approve all tool permission requests without prompting.
 
 To enable `--dangerously-skip-permissions` for all sessions at the server process level, set `PASEO_AGY_DANGEROUSLY_SKIP_PERMISSIONS=1` in the daemon's launch environment.
 
