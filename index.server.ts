@@ -20,6 +20,7 @@ import {
 } from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
 import {
+  AUTO_MODE_ID,
   DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
   NATIVE_AUTO_APPROVE_BASE_MODE,
   enrichCatalogModes,
@@ -115,6 +116,7 @@ export default function contribute(
       const connection = await provider.connect(request);
       const listeners = new Set<(event: any) => void>();
       const sessionModes = new Map<string, string>();
+      const nativeSupportedModes = new Set<string>();
       const pendingQuotaErrors = new Map<string, string>();
       const pendingMcpErrors = new Map<string, string>();
       const activeTurns = new Map<string, string>();
@@ -126,6 +128,23 @@ export default function contribute(
       const rebuildingSessions = new Map<string, RebuildState>();
       const rebuildingByRequestId = new Map<string, RebuildState>();
       const recoveryPromises = new Map<string, Promise<void>>();
+
+      const resolveWireMode = (requestedMode: unknown): string | undefined => {
+        if (typeof requestedMode !== "string" || requestedMode.length === 0) return undefined;
+        if (isDangerouslySkipPermissionsMode(requestedMode)) {
+          return NATIVE_AUTO_APPROVE_BASE_MODE;
+        }
+        if (requestedMode === "auto_edit") {
+          return "accept-edits";
+        }
+        if (requestedMode === AUTO_MODE_ID) {
+          if (nativeSupportedModes.size > 0 && !nativeSupportedModes.has(AUTO_MODE_ID)) {
+            return NATIVE_AUTO_APPROVE_BASE_MODE;
+          }
+          return AUTO_MODE_ID;
+        }
+        return requestedMode;
+      };
 
       const emit = (event: any) => {
         for (const listener of listeners) listener(event);
@@ -208,10 +227,11 @@ export default function contribute(
               persistence: currentSnapshot.persistence,
               history: "skip",
             } as any;
-            if (isDangerouslySkipPermissionsMode(recoveryOpenInput.config?.mode)) {
+            const recoveryWireMode = resolveWireMode(recoveryOpenInput.config?.mode);
+            if (recoveryWireMode !== undefined && recoveryWireMode !== recoveryOpenInput.config?.mode) {
               recoveryOpenInput.config = {
                 ...recoveryOpenInput.config,
-                mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                mode: recoveryWireMode,
               };
             }
             await connection.send(recoveryOpenInput);
@@ -346,6 +366,11 @@ export default function contribute(
         }
 
         if (event.type === "catalog" && event.catalog) {
+          if (Array.isArray(event.catalog.modes)) {
+            for (const mode of event.catalog.modes) {
+              if (mode?.id) nativeSupportedModes.add(mode.id);
+            }
+          }
           event = {
             ...event,
             catalog: enrichCatalogModes(event.catalog),
@@ -366,6 +391,11 @@ export default function contribute(
             event = { ...event, capabilities: [...event.capabilities, "prompt.steer"] };
           }
         } else if (event.type === "session.config") {
+          if (event.config && Array.isArray(event.config.modes)) {
+            for (const mode of event.config.modes) {
+              if (mode?.id) nativeSupportedModes.add(mode.id);
+            }
+          }
           const currentMode = sessionModes.get(event.sessionId);
           event = {
             ...event,
@@ -590,43 +620,57 @@ export default function contribute(
               pendingSystemPrompts.set(input.sessionId, systemPrompt.trim());
             }
             const requestedMode = input.config?.mode;
-            if (isDangerouslySkipPermissionsMode(requestedMode)) {
-              sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+            const normalizedMode =
+              isDangerouslySkipPermissionsMode(requestedMode)
+                ? DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID
+                : requestedMode === "auto_edit"
+                ? "accept-edits"
+                : requestedMode;
+            if (typeof normalizedMode === "string" && normalizedMode.length > 0) {
+              sessionModes.set(input.sessionId, normalizedMode);
+            }
+            const wireMode = resolveWireMode(requestedMode);
+            if (wireMode !== undefined && wireMode !== requestedMode) {
               input = {
                 ...input,
                 config: {
                   ...input.config,
-                  mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                  mode: wireMode,
                 },
               };
-            } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
-              sessionModes.set(input.sessionId, requestedMode);
             }
           }
           if (input?.type === "session.configure" && typeof input.sessionId === "string") {
             if (input.changes && "mode" in input.changes) {
               const requestedMode = input.changes.mode;
-              if (isDangerouslySkipPermissionsMode(requestedMode)) {
-                sessionModes.set(input.sessionId, DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID);
+              const normalizedMode =
+                isDangerouslySkipPermissionsMode(requestedMode)
+                  ? DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID
+                  : requestedMode === "auto_edit"
+                  ? "accept-edits"
+                  : requestedMode;
+              if (typeof normalizedMode === "string" && normalizedMode.length > 0) {
+                sessionModes.set(input.sessionId, normalizedMode);
+              } else if (requestedMode === null) {
+                sessionModes.delete(input.sessionId);
+              }
+              const wireMode = resolveWireMode(requestedMode);
+              if (wireMode !== undefined && wireMode !== requestedMode) {
                 input = {
                   ...input,
                   changes: {
                     ...input.changes,
-                    mode: NATIVE_AUTO_APPROVE_BASE_MODE,
+                    mode: wireMode,
                   },
                 };
-              } else if (typeof requestedMode === "string" && requestedMode.length > 0) {
-                sessionModes.set(input.sessionId, requestedMode);
-              } else if (requestedMode === null) {
-                sessionModes.delete(input.sessionId);
               }
             }
             const snap = sessionSnapshots.get(input.sessionId);
             if (snap) {
               const recordedMode = sessionModes.get(input.sessionId);
               const snapshotChanges =
-                isDangerouslySkipPermissionsMode(recordedMode) && input.changes
-                  ? { ...input.changes, mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID }
+                recordedMode !== undefined && input.changes && "mode" in input.changes
+                  ? { ...input.changes, mode: recordedMode }
                   : input.changes;
               sessionSnapshots.set(
                 input.sessionId,
@@ -715,12 +759,12 @@ export default function contribute(
           if (resolvedInput?.type === "session.open" && typeof resolvedInput.sessionId === "string") {
             const recordedMode = sessionModes.get(resolvedInput.sessionId);
             const snapshotOpenInput =
-              isDangerouslySkipPermissionsMode(recordedMode) && resolvedInput.config
+              recordedMode !== undefined && resolvedInput.config
                 ? {
                     ...resolvedInput,
                     config: {
                       ...resolvedInput.config,
-                      mode: DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
+                      mode: recordedMode,
                     },
                   }
                 : resolvedInput;
