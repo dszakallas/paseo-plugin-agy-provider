@@ -17,8 +17,8 @@
     "node": ">=22.18.0"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.8.0",
-    "@types/node": "^24.3.0",
-    "typescript": "^5.9.2"
+    "@getpaseo/plugin": "^0.16.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }
