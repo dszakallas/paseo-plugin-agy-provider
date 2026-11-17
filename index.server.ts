@@ -19,6 +19,7 @@ import {
   isRecoverableTurnFailureMessage,
 } from "./server/recovery.ts";
 import { enrichToolCall } from "./server/tools.ts";
+import registerAgyUsageSource from "./server/usage.ts";
 import {
   AUTO_MODE_ID,
   DANGEROUSLY_SKIP_PERMISSIONS_MODE_ID,
@@ -771,6 +772,8 @@ export default function contribute(
       };
     },
   });
+
+  registerAgyUsageSource(server);
 
   return () => {
     // Leaving the hooks installed would spawn processes for a plugin that is no longer active.
